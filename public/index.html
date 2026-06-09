@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Automatic Sports Card Listing</title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Automatic Sports Card Listing</p>
+          <h1>Batch upload, price, and publish cards</h1>
+        </div>
+        <div class="status-pill" id="serverStatus">Checking server...</div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Create Batch</h2>
+          <button id="newBatchButton">New batch</button>
+        </div>
+        <div class="grid-2">
+          <label>
+            Source
+            <select id="batchSource">
+              <option value="web">Web</option>
+              <option value="mobile">Mobile</option>
+              <option value="api">API</option>
+            </select>
+          </label>
+          <label>
+            Notes
+            <input id="batchNotes" type="text" placeholder="Optional batch notes" />
+          </label>
+        </div>
+        <div class="row">
+          <button id="createBatchButton">Create batch</button>
+          <span id="batchMessage" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>eBay Setup</h2>
+          <button id="loadEbaySetupButton">Load setup from eBay</button>
+        </div>
+        <div class="row">
+          <span id="ebaySetupMessage" class="muted"></span>
+        </div>
+        <pre id="ebaySetupOutput" class="output"></pre>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Import Sold Comps</h2>
+          <button id="importApifyButton">Import Apify results</button>
+        </div>
+        <div class="grid-2">
+          <label>
+            Target card
+            <select id="apifyTargetCard"></select>
+          </label>
+          <label>
+            Source
+            <select id="apifySource">
+              <option value="apify">Apify eBay sold listings</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Paste Apify JSON
+          <textarea id="apifyPayload" rows="8" placeholder="Paste the JSON array or Apify response here"></textarea>
+        </label>
+        <div class="row">
+          <span id="apifyMessage" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Upload Cards</h2>
+          <button id="addCardRowButton">Add row</button>
+        </div>
+        <div class="row">
+          <label>
+            Active batch
+            <select id="activeBatchSelect"></select>
+          </label>
+        </div>
+        <div id="cardRows"></div>
+        <div class="row">
+          <button id="uploadCardsButton">Upload cards</button>
+          <span id="uploadMessage" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Batches</h2>
+          <div class="row">
+            <button id="refreshButton">Refresh</button>
+          </div>
+        </div>
+        <div id="batchesList" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Cards</h2>
+        </div>
+        <div id="cardsList" class="list"></div>
+      </section>
+
+      <section class="panel" id="reviewPanel">
+        <div class="panel-head">
+          <h2>Review / Edit</h2>
+          <div class="row">
+            <label>
+              Card
+              <select id="reviewCardSelect"></select>
+            </label>
+            <button class="secondary" id="loadReviewCardButton">Load</button>
+          </div>
+        </div>
+        <pre id="reviewSummary" class="output"></pre>
+        <div id="reviewPricingEvidence" class="evidence-grid"></div>
+        <div class="grid-2">
+          <label>
+            Player
+            <input id="reviewPlayerName" type="text" />
+          </label>
+          <label>
+            Year
+            <input id="reviewYear" type="number" min="1900" max="2100" />
+          </label>
+          <label>
+            Set
+            <input id="reviewSetName" type="text" />
+          </label>
+          <label>
+            Card #
+            <input id="reviewCardNumber" type="text" />
+          </label>
+          <label>
+            Parallel
+            <input id="reviewParallel" type="text" placeholder="Blue Refractor, Base, etc." />
+          </label>
+          <label>
+            Rookie mode
+            <select id="reviewRookieMode">
+              <option value="none">No rookie hint</option>
+              <option value="generic">Rookie / RC</option>
+              <option value="rated">Rated Rookie</option>
+            </select>
+          </label>
+          <label>
+            Print run
+            <input id="reviewPrintRun" type="text" placeholder="75 or /75" />
+          </label>
+          <label>
+            Serial
+            <input id="reviewSerialNumber" type="text" placeholder="002/150" />
+          </label>
+          <label class="check-row">
+            <input id="reviewBaseHint" type="checkbox" />
+            Base / no variation
+          </label>
+          <label class="check-row">
+            <input id="reviewAutoHint" type="checkbox" />
+            Auto / autograph
+          </label>
+          <label class="check-row">
+            <input id="reviewThickCard" type="checkbox" />
+            Thick card
+          </label>
+          <label>
+            Grade
+            <input id="reviewGrade" type="text" placeholder="PSA 10, SGC 9.5, etc." />
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea id="reviewNotes" rows="4" placeholder="Optional notes for the review step"></textarea>
+        </label>
+        <div class="row">
+          <button id="saveReviewButton">Save changes</button>
+          <button class="secondary" id="saveReviewAndProcessButton">Save &amp; reprocess</button>
+          <button class="secondary" id="approveReviewButton">Approve</button>
+          <span id="reviewMessage" class="muted"></span>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/public/app.js"></script>
+  </body>
+</html>

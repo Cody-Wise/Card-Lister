@@ -1,0 +1,292 @@
+export const catalog = [
+  {
+    id: "cat_corbin_carroll_2023_topps_chrome_95_raw",
+    playerName: "Corbin Carroll",
+    year: 2023,
+    setName: "Topps Chrome",
+    cardNumber: "95",
+    parallel: "Base",
+    sport: "Baseball",
+    gradedFlag: false,
+    grade: null,
+    aliases: [
+      "corbin carroll",
+      "2023 topps chrome 95",
+      "topps chrome corbin carroll"
+    ]
+  },
+  {
+    id: "cat_michael_jordan_1992_skybox_583_raw",
+    playerName: "Michael Jordan",
+    year: 1992,
+    setName: "SkyBox",
+    cardNumber: "583",
+    parallel: "SkyMaster",
+    sport: "Basketball",
+    gradedFlag: false,
+    grade: null,
+    aliases: [
+      "michael jordan",
+      "1992 skybox michael jordan 583",
+      "1992 skybox #583 michael jordan",
+      "skybox skymaster michael jordan 583",
+      "skybox michael jordan 583",
+      "michael jordan 1992 skybox #583",
+      "sky master chicago bulls"
+    ]
+  },
+  {
+    id: "cat_shohei_ohtani_2024_topps_update_us1_raw",
+    playerName: "Shohei Ohtani",
+    year: 2024,
+    setName: "Topps Update",
+    cardNumber: "US1",
+    parallel: "Base",
+    sport: "Baseball",
+    gradedFlag: false,
+    grade: null,
+    aliases: [
+      "shohei ohtani",
+      "2024 topps update us1",
+      "topps update ohtani"
+    ]
+  },
+  {
+    id: "cat_jackson_holliday_2022_bowman_chrome_bcp1_psa10",
+    playerName: "Jackson Holliday",
+    year: 2022,
+    setName: "Bowman Chrome Prospects",
+    cardNumber: "BCP1",
+    parallel: "Base",
+    sport: "Baseball",
+    gradedFlag: true,
+    grade: "PSA 10",
+    aliases: [
+      "jackson holliday",
+      "2022 bowman chrome prospects bcp1",
+      "bowman chrome holliday psa 10"
+    ]
+  },
+  {
+    id: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    playerName: "Matas Buzelis",
+    year: 2024,
+    setName: "Panini Select Basketball",
+    cardNumber: "70",
+    parallel: "Concourse Blue Wave Prizm",
+    sport: "Basketball",
+    gradedFlag: false,
+    grade: null,
+    aliases: [
+      "matas buzelis",
+      "2024 panini select 70",
+      "2024 25 panini select matas buzelis concourse rc blue wave prizm 75 bulls",
+      "matas buzelis concourse rc blue wave prizm",
+      "select matas buzelis 70 blue wave prizm",
+      "66/75"
+    ]
+  }
+];
+
+export const soldComps = [
+  {
+    id: "comp_1",
+    cardId: "cat_corbin_carroll_2023_topps_chrome_95_raw",
+    source: "marketplace_insights",
+    title: "2023 Topps Chrome Corbin Carroll #95 Base",
+    conditionLabel: "Raw",
+    salePrice: 18.5,
+    shippingPrice: 1.99,
+    totalPrice: 20.49,
+    soldAt: "2026-05-25T18:00:00.000Z",
+    url: "https://example.com/comp/1",
+    matchScore: 0.99
+  },
+  {
+    id: "comp_2",
+    cardId: "cat_corbin_carroll_2023_topps_chrome_95_raw",
+    source: "marketplace_insights",
+    title: "2023 Topps Chrome Corbin Carroll #95",
+    conditionLabel: "Raw",
+    salePrice: 17.25,
+    shippingPrice: 2.5,
+    totalPrice: 19.75,
+    soldAt: "2026-05-22T18:00:00.000Z",
+    url: "https://example.com/comp/2",
+    matchScore: 0.97
+  },
+  {
+    id: "comp_3",
+    cardId: "cat_corbin_carroll_2023_topps_chrome_95_raw",
+    source: "marketplace_insights",
+    title: "2023 Topps Chrome Corbin Carroll #95 Refractor",
+    conditionLabel: "Raw",
+    salePrice: 24.99,
+    shippingPrice: 0,
+    totalPrice: 24.99,
+    soldAt: "2026-05-21T18:00:00.000Z",
+    url: "https://example.com/comp/3",
+    matchScore: 0.84
+  },
+  {
+    id: "comp_4",
+    cardId: "cat_shohei_ohtani_2024_topps_update_us1_raw",
+    source: "marketplace_insights",
+    title: "2024 Topps Update Shohei Ohtani US1",
+    conditionLabel: "Raw",
+    salePrice: 12.95,
+    shippingPrice: 1.99,
+    totalPrice: 14.94,
+    soldAt: "2026-05-24T18:00:00.000Z",
+    url: "https://example.com/comp/4",
+    matchScore: 0.98
+  },
+  {
+    id: "comp_5",
+    cardId: "cat_jackson_holliday_2022_bowman_chrome_bcp1_psa10",
+    source: "marketplace_insights",
+    title: "2022 Bowman Chrome Prospects Jackson Holliday BCP1 PSA 10",
+    conditionLabel: "PSA 10",
+    salePrice: 69.0,
+    shippingPrice: 0,
+    totalPrice: 69.0,
+    soldAt: "2026-05-20T18:00:00.000Z",
+    url: "https://example.com/comp/5",
+    matchScore: 0.99
+  },
+  {
+    id: "comp_6",
+    cardId: "cat_michael_jordan_1992_skybox_583_raw",
+    source: "marketplace_insights",
+    title: "1992 Skybox Michael Jordan #583 SkyMaster Chicago Bulls",
+    conditionLabel: "Raw",
+    salePrice: 4.99,
+    shippingPrice: 1.5,
+    totalPrice: 6.49,
+    soldAt: "2026-06-07T18:00:00.000Z",
+    url: "https://example.com/comp/6",
+    matchScore: 0.99
+  },
+  {
+    id: "comp_7",
+    cardId: "cat_michael_jordan_1992_skybox_583_raw",
+    source: "marketplace_insights",
+    title: "Michael Jordan 1992 Skybox #583 Skymaster Chicago Bulls",
+    conditionLabel: "Raw",
+    salePrice: 2.99,
+    shippingPrice: 5.97,
+    totalPrice: 8.96,
+    soldAt: "2026-06-06T18:00:00.000Z",
+    url: "https://example.com/comp/7",
+    matchScore: 0.98
+  },
+  {
+    id: "comp_8",
+    cardId: "cat_michael_jordan_1992_skybox_583_raw",
+    source: "marketplace_insights",
+    title: "1992 Skybox Michael Jordan #583 SkyMaster Chicago Bulls",
+    conditionLabel: "Raw",
+    salePrice: 9.99,
+    shippingPrice: 1.99,
+    totalPrice: 11.98,
+    soldAt: "2026-06-05T18:00:00.000Z",
+    url: "https://example.com/comp/8",
+    matchScore: 0.97
+  },
+  {
+    id: "comp_9",
+    cardId: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    source: "marketplace_insights",
+    title: "2024-25 Panini Select Matas Buzelis Concourse RC Blue Wave Prizm #/75 Bulls",
+    conditionLabel: "Raw",
+    salePrice: 4.33,
+    shippingPrice: 4.99,
+    totalPrice: 9.32,
+    soldAt: "2026-05-11T18:00:00.000Z",
+    url: "https://example.com/comp/9",
+    matchScore: 0.99
+  },
+  {
+    id: "comp_10",
+    cardId: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    source: "marketplace_insights",
+    title: "2024-25 Panini Select Matas Buzelis Concourse RC Blue Wave Prizm #/75 Bulls",
+    conditionLabel: "Raw",
+    salePrice: 4.75,
+    shippingPrice: 3.99,
+    totalPrice: 8.74,
+    soldAt: "2026-05-09T18:00:00.000Z",
+    url: "https://example.com/comp/10",
+    matchScore: 0.98
+  },
+  {
+    id: "comp_11",
+    cardId: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    source: "marketplace_insights",
+    title: "2024-25 Panini Select Matas Buzelis Concourse RC Blue Wave Prizm #/75 Bulls",
+    conditionLabel: "Raw",
+    salePrice: 3.99,
+    shippingPrice: 4.99,
+    totalPrice: 8.98,
+    soldAt: "2026-05-08T18:00:00.000Z",
+    url: "https://example.com/comp/11",
+    matchScore: 0.97
+  }
+];
+
+export const activeListings = [
+  {
+    id: "active_1",
+    cardId: "cat_corbin_carroll_2023_topps_chrome_95_raw",
+    title: "2023 Topps Chrome Corbin Carroll #95 Base",
+    conditionLabel: "Raw",
+    price: 21.99,
+    shippingPrice: 0,
+    url: "https://example.com/active/1"
+  },
+  {
+    id: "active_2",
+    cardId: "cat_shohei_ohtani_2024_topps_update_us1_raw",
+    title: "2024 Topps Update Shohei Ohtani US1",
+    conditionLabel: "Raw",
+    price: 15.99,
+    shippingPrice: 0,
+    url: "https://example.com/active/2"
+  },
+  {
+    id: "active_3",
+    cardId: "cat_michael_jordan_1992_skybox_583_raw",
+    title: "1992 Skybox Michael Jordan #583 SkyMaster Chicago Bulls",
+    conditionLabel: "Raw",
+    price: 4.99,
+    shippingPrice: 1.5,
+    url: "https://example.com/active/3"
+  },
+  {
+    id: "active_4",
+    cardId: "cat_michael_jordan_1992_skybox_583_raw",
+    title: "Michael Jordan 1992 Skybox #583 Chicago Bulls",
+    conditionLabel: "Raw",
+    price: 7.99,
+    shippingPrice: 0,
+    url: "https://example.com/active/4"
+  },
+  {
+    id: "active_5",
+    cardId: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    title: "2024-25 Panini Select Matas Buzelis Concourse RC Blue Wave Prizm #/75 Bulls",
+    conditionLabel: "Raw",
+    price: 4.99,
+    shippingPrice: 4.99,
+    url: "https://example.com/active/5"
+  },
+  {
+    id: "active_6",
+    cardId: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
+    title: "2024-25 Panini Select Matas Buzelis Concourse RC Blue Wave Prizm /75 Bulls",
+    conditionLabel: "Raw",
+    price: 5.49,
+    shippingPrice: 3.99,
+    url: "https://example.com/active/6"
+  }
+];

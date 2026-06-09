@@ -1,0 +1,5 @@
+.env
+data/images/
+data/state.json
+.DS_Store
+outputs/
