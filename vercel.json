@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "public": true,
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60,
+      "runtime": "nodejs@20.x"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}

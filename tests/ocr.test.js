@@ -9,7 +9,7 @@ import { extractCardMetadata } from "../src/services/ocr.js";
 test("falls back to heuristic metadata extraction", async () => {
   const result = await extractCardMetadata({
     frontFileName: "2023 Topps Chrome Corbin Carroll 95.jpg",
-    backFileName: "corbin-carroll-back.jpg"
+    backFileName: "corbin-carroll-back.jpg",
   });
 
   assert.equal(result.playerName, "Corbin Carroll");
@@ -21,7 +21,7 @@ test("falls back to heuristic metadata extraction", async () => {
 test("extracts serial numbers from heuristic metadata", async () => {
   const result = await extractCardMetadata({
     frontText: "Matas Buzelis Select RC",
-    backText: "Limited edition numbered 66/75 on back."
+    backText: "Limited edition numbered 66/75 on back.",
   });
 
   assert.equal(result.serialNumber, "66/75");
@@ -31,7 +31,7 @@ test("extracts serial numbers from heuristic metadata", async () => {
 test("detects rookie variants from heuristic metadata", async () => {
   const result = await extractCardMetadata({
     frontText: "Rated Rookie Jalen Brunson",
-    backText: "2018-19 Panini Donruss Optic Basketball #179"
+    backText: "2018-19 Panini Donruss Optic Basketball #179",
   });
 
   assert.equal(result.rookieFlag, true);
@@ -42,7 +42,7 @@ test("keeps manual serial hints in heuristic metadata", async () => {
   const result = await extractCardMetadata({
     frontText: "Islam Makhachev",
     backText: "Topps UFC TTC-19",
-    backFileName: "002-150.jpg"
+    backFileName: "002-150.jpg",
   });
 
   assert.equal(result.serialNumber, "002/150");
@@ -52,7 +52,7 @@ test("keeps manual serial hints in heuristic metadata", async () => {
 test("detects autograph hints from heuristic metadata", async () => {
   const result = await extractCardMetadata({
     frontText: "Signature Series Autograph Auto",
-    backText: "2024 Panini Contenders Football #12"
+    backText: "2024 Panini Contenders Football #12",
   });
 
   assert.equal(result.autographFlag, true);
@@ -101,9 +101,9 @@ test("keeps partial OpenAI vision results when one side fails", async (t) => {
             serialNumber: null,
             printRun: null,
             confidence: 0.84,
-            notes: "parallel probe"
-          })
-        })
+            notes: "parallel probe",
+          }),
+        }),
       };
     }
 
@@ -124,9 +124,9 @@ test("keeps partial OpenAI vision results when one side fails", async (t) => {
             serialNumber: "66/75",
             printRun: 75,
             confidence: 0.93,
-            notes: "front vision"
-          })
-        })
+            notes: "front vision",
+          }),
+        }),
       };
     }
 
@@ -137,7 +137,7 @@ test("keeps partial OpenAI vision results when one side fails", async (t) => {
     frontFileName: "front.jpg",
     backFileName: "back.jpg",
     frontImagePath,
-    backImagePath
+    backImagePath,
   });
 
   assert.equal(result.provider, "openai");
@@ -192,9 +192,9 @@ test("runs a parallel follow-up probe when the first pass misses the colorway", 
             serialNumber: null,
             printRun: null,
             confidence: 0.84,
-            notes: "parallel probe"
-          })
-        })
+            notes: "parallel probe",
+          }),
+        }),
       };
     }
 
@@ -215,9 +215,9 @@ test("runs a parallel follow-up probe when the first pass misses the colorway", 
             serialNumber: null,
             printRun: null,
             confidence: 0.71,
-            notes: "front vision"
-          })
-        })
+            notes: "front vision",
+          }),
+        }),
       };
     }
 
@@ -238,9 +238,9 @@ test("runs a parallel follow-up probe when the first pass misses the colorway", 
             serialNumber: "002/150",
             printRun: 150,
             confidence: 0.66,
-            notes: "back vision"
-          })
-        })
+            notes: "back vision",
+          }),
+        }),
       };
     }
 
@@ -251,7 +251,7 @@ test("runs a parallel follow-up probe when the first pass misses the colorway", 
     frontFileName: "front.jpg",
     backFileName: "back.jpg",
     frontImagePath,
-    backImagePath
+    backImagePath,
   });
 
   assert.equal(result.provider, "openai");

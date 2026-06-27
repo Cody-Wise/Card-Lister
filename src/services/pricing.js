@@ -2,6 +2,13 @@ function sortNumbers(values) {
   return [...values].sort((a, b) => a - b);
 }
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function median(values) {
   if (!values.length) return null;
   const sorted = sortNumbers(values);
@@ -15,11 +22,14 @@ function median(values) {
 function percentile(values, percentileValue) {
   if (!values.length) return null;
   const sorted = sortNumbers(values);
-  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * percentileValue)));
+  const index = Math.max(
+    0,
+    Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * percentileValue)),
+  );
   return sorted[index];
 }
 
-function trimOutliers(values) {
+export function trimOutliers(values) {
   if (values.length < 4) return values;
   const sorted = sortNumbers(values);
   const q1 = percentile(sorted, 0.25);
@@ -35,24 +45,296 @@ function roundMoney(value) {
 }
 
 function compPrice(comp) {
-  return Number(comp.salePrice ?? comp.sale_price ?? comp.totalPrice ?? comp.total_price ?? comp.price ?? 0);
+  if (typeof comp.serialRunAdjustedPrice === "number" && Number.isFinite(comp.serialRunAdjustedPrice)) {
+    return Number(comp.serialRunAdjustedPrice);
+  }
+  const salePrice = Number(comp.salePrice ?? comp.sale_price ?? 0);
+  const totalPrice = Number(comp.totalPrice ?? comp.total_price ?? comp.price ?? 0);
+  const hasSalePrice = Number.isFinite(salePrice) && salePrice > 0;
+  const hasTotalPrice = Number.isFinite(totalPrice) && totalPrice > 0;
+  if (hasSalePrice && hasTotalPrice) {
+    return Math.max(salePrice, totalPrice);
+  }
+  if (hasSalePrice) {
+    return salePrice;
+  }
+  if (hasTotalPrice) {
+    return totalPrice;
+  }
+  return 0;
 }
 
 function compSnapshot(comp, source) {
   return {
     source: comp.source || source || null,
     listingId: comp.listingId || null,
-    title: comp.title || null,
+    title: comp.title || comp.name || comp.keyword || null,
     conditionLabel: comp.conditionLabel || null,
     salePrice: comp.salePrice ?? comp.sale_price ?? null,
     shippingPrice: comp.shippingPrice ?? null,
     totalPrice: comp.totalPrice ?? comp.total_price ?? comp.price ?? null,
+    printRun: comp.printRun ?? comp.print_run ?? comp.printRunHint ?? null,
+    serialNumber: comp.serialNumber ?? comp.serial_number ?? null,
     soldAt: comp.soldAt || null,
     url: comp.url || null,
     matchScore: comp.matchScore ?? null,
     isBestOfferAccepted: Boolean(comp.isBestOfferAccepted),
     listingType: comp.listingType || null,
-    sellerUsername: comp.sellerUsername || null
+    sellerUsername: comp.sellerUsername || null,
+  };
+}
+
+function hasBaseSignal(haystack) {
+  return /\bbase\b|\bbase card\b/.test(haystack);
+}
+
+function isBaseTitle(title = "") {
+  return hasBaseSignal(normalizeText(title));
+}
+
+function hasParallelSignal(text = "") {
+  const haystack = normalizeText(text);
+  return (
+    /(?:\b\d{1,3}\s*\/\s*\d{1,4}\b|(?:tri\s*color|refractor|prizm|prism|wave|holo|atomic|sparkle|shimmer|die cut|diecut|mojo|scope|hyper|ice|gold|silver|blue|green|red|orange|purple|black|pink|aqua|emerald|lava|laser|raywave|stardust|cracked ice|pulsar|cosmic|tri-color|tiger stripe|checkerboard|discs|nebula|finite|numbered))/.test(
+      haystack,
+    )
+  );
+}
+
+function normalizeParallelName(parallel = "") {
+  const normalized = normalizeText(parallel);
+  if (!normalized) return "";
+  if (normalized === "base" || normalized === "none") return "";
+  return normalized;
+}
+
+function parsePositiveInt(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+}
+
+function parsePrintRunFromText(value) {
+  const text = String(value || "");
+  const fractionRegex = /(\d{1,3})\s*\/\s*(\d{1,4})\b/g;
+  const outOfRegex = /(?:^|[^a-z0-9])(\d{1,3})\s*(?:of|out of|\/)\s*(\d{1,4})\b/g;
+  let match;
+  let bestRun = null;
+  while ((match = fractionRegex.exec(text)) !== null) {
+    const run = parsePositiveInt(match[2]);
+    if (run && (!bestRun || run > bestRun)) {
+      bestRun = run;
+    }
+  }
+  while ((match = outOfRegex.exec(text)) !== null) {
+    const run = parsePositiveInt(match[2]);
+    if (run && (!bestRun || run > bestRun)) {
+      bestRun = run;
+    }
+  }
+  if (bestRun) {
+    return bestRun;
+  }
+  const slashOnlyRegex = /\/\s*(\d{1,4})\b/g;
+  while ((match = slashOnlyRegex.exec(text)) !== null) {
+    const run = parsePositiveInt(match[1]);
+    if (run && (!bestRun || run > bestRun)) {
+      bestRun = run;
+    }
+  }
+  return bestRun;
+}
+
+function isSerializedMetadataTarget(metadata = {}) {
+  return Boolean(
+    parsePositiveInt(metadata.printRun) ||
+      parseSerialRunFromMetadata(metadata.serialNumber) ||
+      parseSerialRunFromMetadata(metadata.serializedRunHint),
+  );
+}
+
+function parseSerialRunFromMetadata(value) {
+  if (value == null) return null;
+  return parsePrintRunFromText(value);
+}
+
+function inferSerialRunFromComp(comp) {
+  const fromPrintRun = parsePositiveInt(comp.printRun);
+  if (fromPrintRun) return fromPrintRun;
+  const fromSerial = parsePrintRunFromText(comp.serialNumber);
+  if (fromSerial) return fromSerial;
+  const fromTitle = parsePrintRunFromText(comp.title);
+  if (fromTitle) return fromTitle;
+  const fromKeyword = parsePrintRunFromText(comp.keyword);
+  if (fromKeyword) return fromKeyword;
+  return null;
+}
+
+function serialRunAdjustmentFactor(targetRun, comparableRun) {
+  if (!targetRun || !comparableRun) return 1;
+  if (targetRun === comparableRun) return 1;
+  const ratio = comparableRun / targetRun;
+  const raw = Math.pow(ratio, 0.35);
+  return Math.min(1.8, Math.max(0.65, raw));
+}
+
+function applySerialRunFilterForPricing(comps, metadata = {}) {
+  const targetRun =
+    parsePositiveInt(metadata.printRun) ||
+    parseSerialRunFromMetadata(metadata.serialNumber) ||
+    parseSerialRunFromMetadata(metadata.serializedRunHint);
+
+  if (!targetRun) {
+    return {
+      mode: "disabled_not_serialized",
+      exactCount: 0,
+      fallbackCount: 0,
+      adjustedCount: 0,
+      usedCount: comps.length,
+      comps,
+    };
+  }
+
+  const serialComps = comps
+    .map((comp) => {
+      const run = inferSerialRunFromComp(comp);
+      return run ? { comp, run } : null;
+    })
+    .filter(Boolean);
+
+  if (!serialComps.length) {
+    return {
+      mode: "no_serial_comps_found",
+      exactCount: 0,
+      fallbackCount: 0,
+      adjustedCount: 0,
+      usedCount: comps.length,
+      comps,
+    };
+  }
+
+  const exact = serialComps
+    .filter((entry) => entry.run === targetRun)
+    .map((entry) => entry.comp);
+
+  if (exact.length) {
+    return {
+      mode: "exact_serial_run",
+      exactCount: exact.length,
+      fallbackCount: serialComps.length - exact.length,
+      adjustedCount: 0,
+      usedCount: exact.length,
+      comps: exact,
+    };
+  }
+
+  const adjusted = serialComps.map((entry) => {
+    const factor = serialRunAdjustmentFactor(targetRun, entry.run);
+    const adjustedPrice = compPrice(entry.comp) * factor;
+    return {
+      ...entry.comp,
+      serialRun: entry.run,
+      serialRunAdjustedPrice: roundMoney(adjustedPrice),
+      serialRunAdjustmentFactor: Number(factor.toFixed(4)),
+    };
+  });
+
+  return {
+    mode: "fallback_serialized",
+    exactCount: 0,
+    fallbackCount: serialComps.length,
+    adjustedCount: adjusted.length,
+    usedCount: adjusted.length,
+    comps: adjusted,
+  };
+}
+
+function isExactParallelMatch(title, parallel) {
+  const haystack = normalizeText(title);
+  return Boolean(haystack && parallel && haystack.includes(parallel));
+}
+
+function isSimilarParallelMatch(title, parallel) {
+  const target = normalizeText(parallel);
+  const haystack = normalizeText(title);
+  if (!haystack || !target) return false;
+  if (!hasParallelSignal(haystack)) return false;
+  const targetWords = target.split(" ").filter((word) => word.length >= 3);
+  if (!targetWords.length) return false;
+  if (targetWords.length === 1) {
+    return targetWords.every((word) => haystack.includes(word));
+  }
+  const matches = targetWords.filter((word) => haystack.includes(word));
+  return matches.length >= Math.min(2, targetWords.length);
+}
+
+function classifyParallelComps(comps, parallel) {
+  const exact = [];
+  const similar = [];
+  for (const comp of comps) {
+    const title = comp.title || "";
+    if (isBaseTitle(title)) continue;
+    if (!title) continue;
+    if (isExactParallelMatch(title, parallel)) {
+      exact.push(comp);
+      continue;
+    }
+    if (isSimilarParallelMatch(title, parallel)) {
+      similar.push(comp);
+    }
+  }
+  return { exact, similar };
+}
+
+function applyParallelFilterForPricing(comps, metadata = {}) {
+  const parallel = normalizeParallelName(metadata.parallel);
+  if (!parallel || metadata.baseHint) {
+    return {
+      mode: "disabled",
+      exactCount: 0,
+      similarCount: 0,
+      usedCount: comps.length,
+      comps,
+    };
+  }
+
+  const { exact, similar } = classifyParallelComps(comps, parallel);
+  const exactCount = exact.length;
+  const similarCount = similar.length;
+  if (exact.length) {
+    return {
+      mode: "exact_parallel",
+      exactCount,
+      similarCount,
+      usedCount: exact.length,
+      comps: exact,
+    };
+  }
+  if (similar.length) {
+    return {
+      mode: "similar_parallel",
+      exactCount,
+      similarCount,
+      usedCount: similar.length,
+      comps: similar,
+    };
+  }
+
+  const nonBase = comps.filter((comp) => !isBaseTitle(comp.title || ""));
+  if (nonBase.length !== comps.length) {
+    return {
+      mode: "parallel_not_found_non_base",
+      exactCount,
+      similarCount,
+      usedCount: nonBase.length,
+      comps: nonBase,
+    };
+  }
+  return {
+    mode: "parallel_not_found_all",
+    exactCount,
+    similarCount,
+    usedCount: comps.length,
+    comps,
   };
 }
 
@@ -71,12 +353,34 @@ function trimCompOutliers(comps) {
   });
 }
 
-export function calculatePrice({ soldComps = [], activeListings = [], strategy = "sold_comps_p25" }) {
-  const soldEvidence = soldComps.map((comp) => compSnapshot(comp, "sold")).filter((comp) => compPrice(comp) > 0);
-  const activeEvidence = activeListings.map((listing) => compSnapshot(listing, "active")).filter((listing) => compPrice(listing) > 0);
-  const trimmedSoldEvidence = trimCompOutliers(soldEvidence);
+export function calculatePrice({
+  soldComps = [],
+  activeListings = [],
+  strategy = "sold_comps_p25",
+  metadata = {},
+}) {
+  const soldEvidence = soldComps
+    .map((comp) => compSnapshot(comp, "sold"))
+    .filter((comp) => compPrice(comp) > 0);
+  const activeEvidence = activeListings
+    .map((listing) => compSnapshot(listing, "active"))
+    .filter((listing) => compPrice(listing) > 0);
+  const parallelMode = applyParallelFilterForPricing([...soldEvidence], metadata);
+  const parallelActiveMode = applyParallelFilterForPricing([...activeEvidence], metadata);
+  const serialMode = applySerialRunFilterForPricing(parallelMode.comps, metadata);
+  const serialActiveMode = applySerialRunFilterForPricing(parallelActiveMode.comps, metadata);
+  const finalSoldEvidence =
+    serialMode.mode === "no_serial_comps_found" || serialMode.mode === "disabled_not_serialized"
+      ? parallelMode.comps
+      : serialMode.comps;
+  const finalActiveEvidence =
+    serialActiveMode.mode === "no_serial_comps_found" ||
+    serialActiveMode.mode === "disabled_not_serialized"
+      ? parallelActiveMode.comps
+      : serialActiveMode.comps;
+  const trimmedSoldEvidence = trimCompOutliers(finalSoldEvidence);
   const soldPrices = trimmedSoldEvidence.map(compPrice).filter((value) => value > 0);
-  const activePrices = activeEvidence.map(compPrice).filter((value) => value > 0);
+  const activePrices = finalActiveEvidence.map(compPrice).filter((value) => value > 0);
   const trimmed = soldPrices;
   const soldMedian = median(trimmed);
   const soldP25 = percentile(trimmed, 0.25);
@@ -84,6 +388,7 @@ export function calculatePrice({ soldComps = [], activeListings = [], strategy =
   const activeMedian = median(activePrices);
   const activeP25 = percentile(activePrices, 0.25);
   const activeFloor = activePrices.length ? Math.min(...activePrices) : null;
+  const serializedTarget = isSerializedMetadataTarget(metadata);
 
   let recommended = soldAnchor ?? soldMedian ?? activeMedian ?? activeFloor ?? null;
   let confidence = soldPrices.length >= 3 ? "high" : soldPrices.length === 2 ? "medium" : "low";
@@ -95,14 +400,16 @@ export function calculatePrice({ soldComps = [], activeListings = [], strategy =
   if (soldPrices.length >= 3) {
     const hasActiveSignal = activeMedian != null;
     const hotRatio = soldAnchor && activeMedian ? activeMedian / soldAnchor : null;
-    const shouldBlend = hasActiveSignal && hotRatio != null && hotRatio >= 1.75 && activePrices.length >= 3;
+    const shouldBlend =
+      hasActiveSignal && hotRatio != null && hotRatio >= 1.75 && activePrices.length >= 3;
     const baseActiveWeight = 0.05;
     const hotnessBoost = shouldBlend ? Math.min(0.2, (hotRatio - 1.75) * 0.35) : 0;
     const activeWeightPct = shouldBlend ? Math.min(0.25, baseActiveWeight + hotnessBoost) : 0;
     const soldWeightPct = 1 - activeWeightPct;
-    const blended = shouldBlend && soldAnchor != null
-      ? (soldAnchor * soldWeightPct) + (activeMedian * activeWeightPct)
-      : soldAnchor;
+    const blended =
+      shouldBlend && soldAnchor != null
+        ? soldAnchor * soldWeightPct + activeMedian * activeWeightPct
+        : soldAnchor;
 
     soldWeight = shouldBlend && soldAnchor != null ? soldWeightPct : null;
     activeWeight = shouldBlend && soldAnchor != null ? activeWeightPct : null;
@@ -115,14 +422,19 @@ export function calculatePrice({ soldComps = [], activeListings = [], strategy =
         reason = `Using ${strategy === "sold_comps_median" ? "sold median" : "sold 25th percentile"} with a light active-listing check.`;
       }
     } else {
-      reason = strategy === "sold_comps_median"
-        ? "Using trimmed sold comp median."
-        : "Using trimmed sold comp 25th percentile.";
+      reason =
+        strategy === "sold_comps_median"
+          ? "Using trimmed sold comp median."
+          : "Using trimmed sold comp 25th percentile.";
     }
+  } else if (soldPrices.length > 0 && serializedTarget) {
+    reason = "Using available sold comps for serialized card pricing.";
+    recommended = soldAnchor ?? soldMedian ?? soldP25;
   } else if (activeFloor != null) {
-    reason = activePrices.length >= 3
-      ? "Using active listing median because sold comps are thin."
-      : "Using active listing floor because sold comps are thin.";
+    reason =
+      activePrices.length >= 3
+        ? "Using active listing median because sold comps are thin."
+        : "Using active listing floor because sold comps are thin.";
     confidence = "low";
     recommended = activeMedian ?? activeP25 ?? activeFloor;
   }
@@ -146,8 +458,8 @@ export function calculatePrice({ soldComps = [], activeListings = [], strategy =
     reason,
     trimmedSoldPrices: trimmed.map(roundMoney),
     evidence: {
-      sold: trimmedSoldEvidence.slice().sort((a, b) => compPrice(a) - compPrice(b)),
-      active: activeEvidence.slice().sort((a, b) => compPrice(a) - compPrice(b)),
+      sold: trimmedSoldEvidence.slice().sort((a, b) => (b.matchScore ?? 0) - (a.matchScore ?? 0)),
+      active: activeEvidence.slice().sort((a, b) => (b.matchScore ?? 0) - (a.matchScore ?? 0)),
       soldAnchor: soldAnchor == null ? null : roundMoney(soldAnchor),
       soldMedian: soldMedian == null ? null : roundMoney(soldMedian),
       soldP25: soldP25 == null ? null : roundMoney(soldP25),
@@ -156,7 +468,21 @@ export function calculatePrice({ soldComps = [], activeListings = [], strategy =
       activeFloor: activeFloor == null ? null : roundMoney(activeFloor),
       soldWeight: soldWeight == null ? null : Number(soldWeight.toFixed(4)),
       activeWeight: activeWeight == null ? null : Number(activeWeight.toFixed(4)),
-      blendApplied
-    }
+      blendApplied,
+      soldParallelFilterMode: parallelMode.mode,
+      activeParallelFilterMode: parallelActiveMode.mode,
+      soldParallelExactCount: parallelMode.exactCount,
+      soldParallelSimilarCount: parallelMode.similarCount,
+      activeParallelExactCount: parallelActiveMode.exactCount,
+      activeParallelSimilarCount: parallelActiveMode.similarCount,
+      soldSerialFilterMode: serialMode.mode,
+      activeSerialFilterMode: serialActiveMode.mode,
+      soldSerialExactCount: serialMode.exactCount,
+      soldSerialFallbackCount: serialMode.fallbackCount,
+      soldSerialAdjustedCount: serialMode.adjustedCount,
+      activeSerialExactCount: serialActiveMode.exactCount,
+      activeSerialFallbackCount: serialActiveMode.fallbackCount,
+      activeSerialAdjustedCount: serialActiveMode.adjustedCount,
+    },
   };
 }

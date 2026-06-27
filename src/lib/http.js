@@ -10,7 +10,7 @@ export function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body)
+    "Content-Length": Buffer.byteLength(body),
   });
   res.end(body);
 }
@@ -23,4 +23,3 @@ export function sendText(res, statusCode, body, contentType = "text/plain; chars
 export function notFound(res, message = "Not found") {
   sendJson(res, 404, { error: message });
 }
-

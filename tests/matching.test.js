@@ -8,9 +8,8 @@ test("matches a known Corbin Carroll card", () => {
     year: 2023,
     setName: "Topps Chrome",
     cardNumber: "95",
-    gradedFlag: false
+    gradedFlag: false,
   });
   assert.ok(result.canonicalCard);
   assert.equal(result.canonicalCard.playerName, "Corbin Carroll");
 });
-

@@ -40,4 +40,3 @@ export async function loadEnvFile(envPath = path.resolve(process.cwd(), ".env"))
     throw error;
   }
 }
-

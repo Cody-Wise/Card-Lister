@@ -3,3 +3,8 @@ data/images/
 data/state.json
 .DS_Store
 outputs/
+coverage/
+.vercel
+.aider*
+node_modules/
+work/

@@ -9,11 +9,7 @@ export const catalog = [
     sport: "Baseball",
     gradedFlag: false,
     grade: null,
-    aliases: [
-      "corbin carroll",
-      "2023 topps chrome 95",
-      "topps chrome corbin carroll"
-    ]
+    aliases: ["corbin carroll", "2023 topps chrome 95", "topps chrome corbin carroll"],
   },
   {
     id: "cat_michael_jordan_1992_skybox_583_raw",
@@ -32,8 +28,8 @@ export const catalog = [
       "skybox skymaster michael jordan 583",
       "skybox michael jordan 583",
       "michael jordan 1992 skybox #583",
-      "sky master chicago bulls"
-    ]
+      "sky master chicago bulls",
+    ],
   },
   {
     id: "cat_shohei_ohtani_2024_topps_update_us1_raw",
@@ -45,11 +41,7 @@ export const catalog = [
     sport: "Baseball",
     gradedFlag: false,
     grade: null,
-    aliases: [
-      "shohei ohtani",
-      "2024 topps update us1",
-      "topps update ohtani"
-    ]
+    aliases: ["shohei ohtani", "2024 topps update us1", "topps update ohtani"],
   },
   {
     id: "cat_jackson_holliday_2022_bowman_chrome_bcp1_psa10",
@@ -64,8 +56,8 @@ export const catalog = [
     aliases: [
       "jackson holliday",
       "2022 bowman chrome prospects bcp1",
-      "bowman chrome holliday psa 10"
-    ]
+      "bowman chrome holliday psa 10",
+    ],
   },
   {
     id: "cat_matas_buzelis_2024_panini_select_70_blue_wave_raw",
@@ -83,9 +75,9 @@ export const catalog = [
       "2024 25 panini select matas buzelis concourse rc blue wave prizm 75 bulls",
       "matas buzelis concourse rc blue wave prizm",
       "select matas buzelis 70 blue wave prizm",
-      "66/75"
-    ]
-  }
+      "66/75",
+    ],
+  },
 ];
 
 export const soldComps = [
@@ -100,7 +92,7 @@ export const soldComps = [
     totalPrice: 20.49,
     soldAt: "2026-05-25T18:00:00.000Z",
     url: "https://example.com/comp/1",
-    matchScore: 0.99
+    matchScore: 0.99,
   },
   {
     id: "comp_2",
@@ -113,7 +105,7 @@ export const soldComps = [
     totalPrice: 19.75,
     soldAt: "2026-05-22T18:00:00.000Z",
     url: "https://example.com/comp/2",
-    matchScore: 0.97
+    matchScore: 0.97,
   },
   {
     id: "comp_3",
@@ -126,7 +118,7 @@ export const soldComps = [
     totalPrice: 24.99,
     soldAt: "2026-05-21T18:00:00.000Z",
     url: "https://example.com/comp/3",
-    matchScore: 0.84
+    matchScore: 0.84,
   },
   {
     id: "comp_4",
@@ -139,7 +131,7 @@ export const soldComps = [
     totalPrice: 14.94,
     soldAt: "2026-05-24T18:00:00.000Z",
     url: "https://example.com/comp/4",
-    matchScore: 0.98
+    matchScore: 0.98,
   },
   {
     id: "comp_5",
@@ -152,7 +144,7 @@ export const soldComps = [
     totalPrice: 69.0,
     soldAt: "2026-05-20T18:00:00.000Z",
     url: "https://example.com/comp/5",
-    matchScore: 0.99
+    matchScore: 0.99,
   },
   {
     id: "comp_6",
@@ -165,7 +157,7 @@ export const soldComps = [
     totalPrice: 6.49,
     soldAt: "2026-06-07T18:00:00.000Z",
     url: "https://example.com/comp/6",
-    matchScore: 0.99
+    matchScore: 0.99,
   },
   {
     id: "comp_7",
@@ -178,7 +170,7 @@ export const soldComps = [
     totalPrice: 8.96,
     soldAt: "2026-06-06T18:00:00.000Z",
     url: "https://example.com/comp/7",
-    matchScore: 0.98
+    matchScore: 0.98,
   },
   {
     id: "comp_8",
@@ -191,7 +183,7 @@ export const soldComps = [
     totalPrice: 11.98,
     soldAt: "2026-06-05T18:00:00.000Z",
     url: "https://example.com/comp/8",
-    matchScore: 0.97
+    matchScore: 0.97,
   },
   {
     id: "comp_9",
@@ -204,7 +196,7 @@ export const soldComps = [
     totalPrice: 9.32,
     soldAt: "2026-05-11T18:00:00.000Z",
     url: "https://example.com/comp/9",
-    matchScore: 0.99
+    matchScore: 0.99,
   },
   {
     id: "comp_10",
@@ -217,7 +209,7 @@ export const soldComps = [
     totalPrice: 8.74,
     soldAt: "2026-05-09T18:00:00.000Z",
     url: "https://example.com/comp/10",
-    matchScore: 0.98
+    matchScore: 0.98,
   },
   {
     id: "comp_11",
@@ -230,8 +222,8 @@ export const soldComps = [
     totalPrice: 8.98,
     soldAt: "2026-05-08T18:00:00.000Z",
     url: "https://example.com/comp/11",
-    matchScore: 0.97
-  }
+    matchScore: 0.97,
+  },
 ];
 
 export const activeListings = [
@@ -242,7 +234,7 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 21.99,
     shippingPrice: 0,
-    url: "https://example.com/active/1"
+    url: "https://example.com/active/1",
   },
   {
     id: "active_2",
@@ -251,7 +243,7 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 15.99,
     shippingPrice: 0,
-    url: "https://example.com/active/2"
+    url: "https://example.com/active/2",
   },
   {
     id: "active_3",
@@ -260,7 +252,7 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 4.99,
     shippingPrice: 1.5,
-    url: "https://example.com/active/3"
+    url: "https://example.com/active/3",
   },
   {
     id: "active_4",
@@ -269,7 +261,7 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 7.99,
     shippingPrice: 0,
-    url: "https://example.com/active/4"
+    url: "https://example.com/active/4",
   },
   {
     id: "active_5",
@@ -278,7 +270,7 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 4.99,
     shippingPrice: 4.99,
-    url: "https://example.com/active/5"
+    url: "https://example.com/active/5",
   },
   {
     id: "active_6",
@@ -287,6 +279,6 @@ export const activeListings = [
     conditionLabel: "Raw",
     price: 5.49,
     shippingPrice: 3.99,
-    url: "https://example.com/active/6"
-  }
+    url: "https://example.com/active/6",
+  },
 ];

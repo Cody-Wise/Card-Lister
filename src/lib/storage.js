@@ -2,12 +2,13 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, nowIso } from "./store.js";
+import { getSupabase } from "./supabase.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dataDir = path.join(rootDir, "data");
 const imagesDir = path.join(dataDir, "images");
 
-export async function ensureStorage() {
+async function ensureDiskDir() {
   await fs.mkdir(imagesDir, { recursive: true });
 }
 
@@ -18,7 +19,7 @@ function parseDataUrl(dataUrl) {
   }
   return {
     mimeType: match[1],
-    bytes: Buffer.from(match[2], "base64")
+    bytes: Buffer.from(match[2], "base64"),
   };
 }
 
@@ -29,24 +30,46 @@ function extensionFromMime(mimeType, fallback = "png") {
   return fallback;
 }
 
-export async function saveImageRecord(state, { cardItemId, side, dataUrl, fileName }) {
-  await ensureStorage();
+async function uploadToSupabase(fileName, bytes, mimeType) {
+  const supabase = getSupabase();
+  const { error } = await supabase.storage.from("card-images").upload(fileName, bytes, {
+    contentType: mimeType,
+    upsert: true,
+  });
+  if (error) throw new Error(`Storage upload failed: ${error.message}`);
+}
+
+export async function saveImageRecord(
+  state,
+  { cardItemId, side, dataUrl, fileName, skipSupabaseUpload = false },
+) {
+  await ensureDiskDir();
   const { mimeType, bytes } = parseDataUrl(dataUrl);
   const imageId = createId(state, "img");
   const extension = extensionFromMime(mimeType, path.extname(fileName || "").slice(1) || "png");
   const safeName = `${imageId}-${side}.${extension}`;
-  const filePath = path.join(imagesDir, safeName);
-  await fs.writeFile(filePath, bytes);
+  const diskPath = path.join(imagesDir, safeName);
+  await fs.writeFile(diskPath, bytes);
+
+  let storageUrl = null;
+  if (process.env.SUPABASE_URL && !skipSupabaseUpload) {
+    try {
+      await uploadToSupabase(safeName, bytes, mimeType);
+      storageUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/card-images/${safeName}`;
+    } catch {
+      // fall back to disk serving
+    }
+  }
+
   return {
     id: imageId,
     cardItemId,
     side,
     fileName: fileName || safeName,
     mimeType,
-    storagePath: filePath,
-    url: `/files/${safeName}`,
+    storagePath: diskPath,
+    url: storageUrl || `/files/${safeName}`,
     byteLength: bytes.length,
-    createdAt: nowIso()
+    createdAt: nowIso(),
   };
 }
-

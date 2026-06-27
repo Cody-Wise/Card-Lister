@@ -5,39 +5,42 @@ import { parseApifySoldListings, searchApifySoldListings } from "../src/services
 import { searchEbayListings } from "../src/services/ebay-browse.js";
 
 test("parses apify sold listings and filters noisy lots", () => {
-  const result = parseApifySoldListings([
+  const result = parseApifySoldListings(
+    [
+      {
+        keyword: "jalen brunson 2018 rated rookie",
+        itemId: "168438877206",
+        title: "JALEN BRUNSON 2018-19 OPTIC SILVER HOLO RATED ROOKIE RC #179 KNICKS MINT",
+        condition: "Pre-Owned",
+        soldPrice: "79.99",
+        shippingPrice: "8.15",
+        totalPrice: "88.14",
+        endedAt: "2026-06-07T00:00:00.000Z",
+        url: "https://www.ebay.com/itm/168438877206?nordt=true",
+        listingType: "buy_it_now",
+      },
+      {
+        keyword: "jalen brunson 2018 rated rookie",
+        itemId: "398011773510",
+        title: "Panini Donruss 3-Card Rookie Lot Towns The Rookies #21 Brunson #179",
+        condition: "Pre-Owned",
+        soldPrice: "25.00",
+        shippingPrice: "6.95",
+        totalPrice: "31.95",
+        endedAt: "2026-06-07T00:00:00.000Z",
+        url: "https://www.ebay.com/itm/398011773510?nordt=true",
+        listingType: "auction",
+      },
+    ],
     {
-      keyword: "jalen brunson 2018 rated rookie",
-      itemId: "168438877206",
-      title: "JALEN BRUNSON 2018-19 OPTIC SILVER HOLO RATED ROOKIE RC #179 KNICKS MINT",
-      condition: "Pre-Owned",
-      soldPrice: "79.99",
-      shippingPrice: "8.15",
-      totalPrice: "88.14",
-      endedAt: "2026-06-07T00:00:00.000Z",
-      url: "https://www.ebay.com/itm/168438877206?nordt=true",
-      listingType: "buy_it_now"
+      playerName: "Jalen Brunson",
+      year: 2018,
+      setName: "Panini Donruss Optic Basketball",
+      cardNumber: "179",
+      rookieFlag: true,
+      variantLabel: "Rated Rookie",
     },
-    {
-      keyword: "jalen brunson 2018 rated rookie",
-      itemId: "398011773510",
-      title: "Panini Donruss 3-Card Rookie Lot Towns The Rookies #21 Brunson #179",
-      condition: "Pre-Owned",
-      soldPrice: "25.00",
-      shippingPrice: "6.95",
-      totalPrice: "31.95",
-      endedAt: "2026-06-07T00:00:00.000Z",
-      url: "https://www.ebay.com/itm/398011773510?nordt=true",
-      listingType: "auction"
-    }
-  ], {
-    playerName: "Jalen Brunson",
-    year: 2018,
-    setName: "Panini Donruss Optic Basketball",
-    cardNumber: "179",
-    rookieFlag: true,
-    variantLabel: "Rated Rookie"
-  });
+  );
 
   assert.equal(result.importedCount, 1);
   assert.equal(result.rejectedCount, 1);
@@ -46,38 +49,41 @@ test("parses apify sold listings and filters noisy lots", () => {
 });
 
 test("keeps only base comps when base hint is set", () => {
-  const result = parseApifySoldListings([
+  const result = parseApifySoldListings(
+    [
+      {
+        keyword: "2024 Caitlin Clark Panini Prizm Draft Picks 57 Base",
+        itemId: "base_1",
+        title: "2024 Panini Prizm Draft Picks Caitlin Clark #57 Base",
+        condition: "Pre-Owned",
+        soldPrice: "6.99",
+        shippingPrice: "0.00",
+        totalPrice: "6.99",
+        endedAt: "2026-06-07T00:00:00.000Z",
+        url: "https://www.ebay.com/itm/base_1?nordt=true",
+        listingType: "buy_it_now",
+      },
+      {
+        keyword: "2024 Caitlin Clark Panini Prizm Draft Picks 57 Base",
+        itemId: "var_1",
+        title: "2024 Panini Prizm Draft Picks Caitlin Clark #57 Blue Shimmer /99",
+        condition: "Pre-Owned",
+        soldPrice: "24.99",
+        shippingPrice: "0.00",
+        totalPrice: "24.99",
+        endedAt: "2026-06-07T00:00:00.000Z",
+        url: "https://www.ebay.com/itm/var_1?nordt=true",
+        listingType: "buy_it_now",
+      },
+    ],
     {
-      keyword: "2024 Caitlin Clark Panini Prizm Draft Picks 57 Base",
-      itemId: "base_1",
-      title: "2024 Panini Prizm Draft Picks Caitlin Clark #57 Base",
-      condition: "Pre-Owned",
-      soldPrice: "6.99",
-      shippingPrice: "0.00",
-      totalPrice: "6.99",
-      endedAt: "2026-06-07T00:00:00.000Z",
-      url: "https://www.ebay.com/itm/base_1?nordt=true",
-      listingType: "buy_it_now"
+      playerName: "Caitlin Clark",
+      year: 2024,
+      setName: "Panini Prizm Draft Picks",
+      cardNumber: "57",
+      baseHint: true,
     },
-    {
-      keyword: "2024 Caitlin Clark Panini Prizm Draft Picks 57 Base",
-      itemId: "var_1",
-      title: "2024 Panini Prizm Draft Picks Caitlin Clark #57 Blue Shimmer /99",
-      condition: "Pre-Owned",
-      soldPrice: "24.99",
-      shippingPrice: "0.00",
-      totalPrice: "24.99",
-      endedAt: "2026-06-07T00:00:00.000Z",
-      url: "https://www.ebay.com/itm/var_1?nordt=true",
-      listingType: "buy_it_now"
-    }
-  ], {
-    playerName: "Caitlin Clark",
-    year: 2024,
-    setName: "Panini Prizm Draft Picks",
-    cardNumber: "57",
-    baseHint: true
-  });
+  );
 
   assert.equal(result.importedCount, 1);
   assert.equal(result.rejectedCount, 1);
@@ -114,7 +120,7 @@ test("searches base cards without pulling a parallel lane", async (t) => {
         totalPrice: "6.99",
         endedAt: "2026-06-07T00:00:00.000Z",
         url: "https://www.ebay.com/itm/caitlin_base_1?nordt=true",
-        listingType: "buy_it_now"
+        listingType: "buy_it_now",
       },
       {
         keyword,
@@ -126,14 +132,14 @@ test("searches base cards without pulling a parallel lane", async (t) => {
         totalPrice: "24.99",
         endedAt: "2026-06-07T00:00:00.000Z",
         url: "https://www.ebay.com/itm/caitlin_var_1?nordt=true",
-        listingType: "buy_it_now"
-      }
+        listingType: "buy_it_now",
+      },
     ];
 
     return {
       ok: true,
       status: 200,
-      json: async () => rows
+      json: async () => rows,
     };
   };
 
@@ -142,7 +148,7 @@ test("searches base cards without pulling a parallel lane", async (t) => {
     year: 2024,
     setName: "Panini Prizm Draft Picks",
     cardNumber: "57",
-    baseHint: true
+    baseHint: true,
   });
 
   assert.equal(callCount, 2);
@@ -173,64 +179,65 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
     const body = JSON.parse(options.body);
     const keyword = Array.isArray(body.keywords) ? body.keywords[0] : "";
     if (!firstKeyword) firstKeyword = keyword;
-    const rows = callCount === 1
-      ? [
-          {
-            keyword,
-            itemId: "ism_1",
-            title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor 002/150",
-            condition: "Pre-Owned",
-            soldPrice: "4.33",
-            shippingPrice: "0.00",
-            totalPrice: "4.33",
-            endedAt: "2026-06-07T00:00:00.000Z",
-            url: "https://www.ebay.com/itm/ism_1?nordt=true",
-            listingType: "buy_it_now"
-          },
-          {
-            keyword,
-            itemId: "ism_2",
-            title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 002/150",
-            condition: "Pre-Owned",
-            soldPrice: "4.25",
-            shippingPrice: "0.00",
-            totalPrice: "4.25",
-            endedAt: "2026-06-06T00:00:00.000Z",
-            url: "https://www.ebay.com/itm/ism_2?nordt=true",
-            listingType: "buy_it_now"
-          }
-        ]
-      : [
-          {
-            keyword,
-            itemId: "ism_1",
-            title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor 002/150",
-            condition: "Pre-Owned",
-            soldPrice: "4.33",
-            shippingPrice: "0.00",
-            totalPrice: "4.33",
-            endedAt: "2026-06-07T00:00:00.000Z",
-            url: "https://www.ebay.com/itm/ism_1?nordt=true",
-            listingType: "buy_it_now"
-          },
-          {
-            keyword,
-            itemId: "ism_3",
-            title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor",
-            condition: "Pre-Owned",
-            soldPrice: "4.75",
-            shippingPrice: "0.00",
-            totalPrice: "4.75",
-            endedAt: "2026-06-05T00:00:00.000Z",
-            url: "https://www.ebay.com/itm/ism_3?nordt=true",
-            listingType: "buy_it_now"
-          }
-        ];
+    const rows =
+      callCount === 1
+        ? [
+            {
+              keyword,
+              itemId: "ism_1",
+              title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor 002/150",
+              condition: "Pre-Owned",
+              soldPrice: "4.33",
+              shippingPrice: "0.00",
+              totalPrice: "4.33",
+              endedAt: "2026-06-07T00:00:00.000Z",
+              url: "https://www.ebay.com/itm/ism_1?nordt=true",
+              listingType: "buy_it_now",
+            },
+            {
+              keyword,
+              itemId: "ism_2",
+              title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 002/150",
+              condition: "Pre-Owned",
+              soldPrice: "4.25",
+              shippingPrice: "0.00",
+              totalPrice: "4.25",
+              endedAt: "2026-06-06T00:00:00.000Z",
+              url: "https://www.ebay.com/itm/ism_2?nordt=true",
+              listingType: "buy_it_now",
+            },
+          ]
+        : [
+            {
+              keyword,
+              itemId: "ism_1",
+              title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor 002/150",
+              condition: "Pre-Owned",
+              soldPrice: "4.33",
+              shippingPrice: "0.00",
+              totalPrice: "4.33",
+              endedAt: "2026-06-07T00:00:00.000Z",
+              url: "https://www.ebay.com/itm/ism_1?nordt=true",
+              listingType: "buy_it_now",
+            },
+            {
+              keyword,
+              itemId: "ism_3",
+              title: "2025 Topps Chrome UFC Islam Makhachev #TTC-19 Blue Refractor",
+              condition: "Pre-Owned",
+              soldPrice: "4.75",
+              shippingPrice: "0.00",
+              totalPrice: "4.75",
+              endedAt: "2026-06-05T00:00:00.000Z",
+              url: "https://www.ebay.com/itm/ism_3?nordt=true",
+              listingType: "buy_it_now",
+            },
+          ];
 
     return {
       ok: true,
       status: 200,
-      json: async () => rows
+      json: async () => rows,
     };
   };
 
@@ -242,13 +249,13 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
     parallel: "Blue Refractor",
     serialNumber: "002/150",
     printRun: 150,
-    rookieFlag: false
+    rookieFlag: false,
   });
 
   const pricing = calculatePrice({
     soldComps: result.comps,
     activeListings: [{ price: 4.99 }],
-    strategy: "sold_comps_p25"
+    strategy: "sold_comps_p25",
   });
 
   assert.equal(callCount, 2);
@@ -287,7 +294,7 @@ test("searches autographed serial-numbered cards with autograph hints and denomi
     return {
       ok: true,
       status: 200,
-      json: async () => ([
+      json: async () => [
         {
           keyword,
           itemId: "auto_1",
@@ -298,9 +305,9 @@ test("searches autographed serial-numbered cards with autograph hints and denomi
           totalPrice: "12.49",
           endedAt: "2026-06-07T00:00:00.000Z",
           url: "https://www.ebay.com/itm/auto_1?nordt=true",
-          listingType: "buy_it_now"
-        }
-      ])
+          listingType: "buy_it_now",
+        },
+      ],
     };
   };
 
@@ -311,7 +318,7 @@ test("searches autographed serial-numbered cards with autograph hints and denomi
     cardNumber: "12",
     serialNumber: "002/049",
     printRun: 49,
-    autographFlag: true
+    autographFlag: true,
   });
 
   assert.ok(callCount >= 1);
@@ -354,8 +361,8 @@ test("searches autographed serial-numbered browse listings with autograph hints 
         status: 200,
         json: async () => ({
           access_token: "app-token",
-          expires_in: 7200
-        })
+          expires_in: 7200,
+        }),
       };
     }
 
@@ -366,8 +373,8 @@ test("searches autographed serial-numbered browse listings with autograph hints 
         ok: true,
         status: 200,
         json: async () => ({
-          itemSummaries: []
-        })
+          itemSummaries: [],
+        }),
       };
     }
 
@@ -382,8 +389,8 @@ test("searches autographed serial-numbered browse listings with autograph hints 
       cardNumber: "12",
       serialNumber: "002/049",
       printRun: 49,
-      autographFlag: true
-    }
+      autographFlag: true,
+    },
   });
 
   assert.ok(searchQueries.some((query) => query.includes("/49")));
@@ -413,34 +420,35 @@ test("searches generic rookie cards as rookie rc instead of rated rookie", async
     return {
       ok: true,
       status: 200,
-      json: async () => (keyword.includes("Rookie RC")
-        ? [
-            {
-              keyword,
-              itemId: "sga_1",
-              title: "2018-19 Panini Chronicles Shai Gilgeous-Alexander #89 Rookie RC",
-              condition: "Pre-Owned",
-              soldPrice: "7.49",
-              shippingPrice: "0.00",
-              totalPrice: "7.49",
-              endedAt: "2026-06-07T00:00:00.000Z",
-              url: "https://www.ebay.com/itm/sga_1?nordt=true",
-              listingType: "buy_it_now"
-            },
-            {
-              keyword,
-              itemId: "sga_2",
-              title: "2018-19 Panini Optic Shai Gilgeous-Alexander Rated Rookie RC #89",
-              condition: "Pre-Owned",
-              soldPrice: "18.99",
-              shippingPrice: "0.00",
-              totalPrice: "18.99",
-              endedAt: "2026-06-07T00:00:00.000Z",
-              url: "https://www.ebay.com/itm/sga_2?nordt=true",
-              listingType: "buy_it_now"
-            }
-          ]
-        : [])
+      json: async () =>
+        keyword.includes("Rookie RC")
+          ? [
+              {
+                keyword,
+                itemId: "sga_1",
+                title: "2018-19 Panini Chronicles Shai Gilgeous-Alexander #89 Rookie RC",
+                condition: "Pre-Owned",
+                soldPrice: "7.49",
+                shippingPrice: "0.00",
+                totalPrice: "7.49",
+                endedAt: "2026-06-07T00:00:00.000Z",
+                url: "https://www.ebay.com/itm/sga_1?nordt=true",
+                listingType: "buy_it_now",
+              },
+              {
+                keyword,
+                itemId: "sga_2",
+                title: "2018-19 Panini Optic Shai Gilgeous-Alexander Rated Rookie RC #89",
+                condition: "Pre-Owned",
+                soldPrice: "18.99",
+                shippingPrice: "0.00",
+                totalPrice: "18.99",
+                endedAt: "2026-06-07T00:00:00.000Z",
+                url: "https://www.ebay.com/itm/sga_2?nordt=true",
+                listingType: "buy_it_now",
+              },
+            ]
+          : [],
     };
   };
 
@@ -449,7 +457,7 @@ test("searches generic rookie cards as rookie rc instead of rated rookie", async
     year: 2018,
     setName: "2018-19 Panini Chronicles Basketball",
     cardNumber: "89",
-    rookieFlag: true
+    rookieFlag: true,
   });
 
   assert.equal(callCount, 1);
