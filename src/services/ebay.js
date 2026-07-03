@@ -1133,15 +1133,22 @@ function buildItemSpecifics(card) {
 
   const specifics = {};
 
-  if (player) specifics[sport === "Trading Cards" ? "Card Name" : "Player/Athlete"] = [player];
-  if (sport && sport !== "Trading Cards") specifics.Sport = [sport];
-  if (league && sport !== "Trading Cards") specifics.League = [league];
-  if (year) specifics.Year = [String(year)];
-  if (brand) specifics.Manufacturer = [brand];
-  if (setName) specifics.Set = [setName];
-  if (cardNum) specifics["Card Number"] = [cardNum];
-  if (parallel && parallel !== "None") specifics["Parallel/Variety"] = [parallel];
-  if (team && sport !== "Trading Cards") specifics.Team = [team];
+  // Core identity fields always get a row — even when OCR/matching came up
+  // empty — so the editable specifics table (see renderEbaySpecifics in
+  // public/app.js) always has a place to fill them in by hand. The
+  // genuinely-conditional fields further below (Rookie, Serial, Graded,
+  // etc.) are left conditional since most cards legitimately don't have
+  // them, but these identity fields are ones every card should carry.
+  const isTradingCardSport = sport === "Trading Cards";
+  specifics[isTradingCardSport ? "Card Name" : "Player/Athlete"] = [player || ""];
+  if (!isTradingCardSport) specifics.Sport = [sport || ""];
+  if (!isTradingCardSport) specifics.League = [league || ""];
+  specifics.Year = [year ? String(year) : ""];
+  specifics.Manufacturer = [brand || ""];
+  specifics.Set = [setName || ""];
+  specifics["Card Number"] = [cardNum || ""];
+  specifics["Parallel/Variety"] = [parallel && parallel !== "None" ? parallel : ""];
+  if (!isTradingCardSport) specifics.Team = [team || ""];
   if (tcgGame) specifics.Game = [tcgGame];
   if (nonSportFranchise) specifics.Franchise = [nonSportFranchise];
   specifics.Autographed = isAuto ? ["Yes"] : ["No"];
@@ -1188,6 +1195,22 @@ function buildItemSpecifics(card) {
   }
 
   return specifics;
+}
+
+// Core identity fields in buildItemSpecifics() are always present, even when
+// empty, so the editable preview table always shows a fillable row. Real eBay
+// submissions must not include blank aspect values though, so this strips any
+// specific down to only its non-empty values (or drops it entirely) right
+// before the two real-submission call sites (createInventoryItem,
+// createLiveOffers). buildItemSpecificsForCard (the /ebay-preview wrapper)
+// intentionally skips this so the frontend still sees the empty rows.
+export function stripEmptySpecifics(specifics) {
+  const result = {};
+  for (const [key, values] of Object.entries(specifics)) {
+    const filtered = (Array.isArray(values) ? values : [values]).filter((v) => String(v ?? "").trim());
+    if (filtered.length) result[key] = filtered;
+  }
+  return result;
 }
 
 function buildDescription(card) {
@@ -1823,7 +1846,7 @@ export async function createInventoryItem(card) {
   const sku = card.sku;
   const title = card.ebayTitle || buildEBayTitle(card);
   const description = card.ebayDescription || await buildEBayDescription(card);
-  const specifics = buildItemSpecifics(card);
+  const specifics = stripEmptySpecifics(buildItemSpecifics(card));
   const isGraded = card.candidateCondition === "graded" || card.gradedFlag;
   const conditionDescriptors = isGraded
     ? buildConditionDescriptors(card, {
@@ -1910,7 +1933,7 @@ async function createLiveOffers(cardItems) {
       pricingSummary,
       product: {
         title,
-        aspects: buildItemSpecifics(card),
+        aspects: stripEmptySpecifics(buildItemSpecifics(card)),
         imageUrls: [card.frontImageUrl, card.backImageUrl].filter((u) => u && u !== "NONE"),
       },
     };
