@@ -26,18 +26,18 @@ import {
 // through several generations — CardHedge and an in-progress "CardSight"
 // rename that was never deployed (both fully removed — the account was
 // dropped in favor of a SoldComps plan upgrade) -> an Apify actor
-// (caffein.dev~ebay-sold-listings, scraping eBay's own sold-listings pages —
-// APIFY_TOKEN and the actor call now power ONLY the separate market-heat
-// feature, see getApifyMarketHeatReport) -> SoldComps (api.sold-comps.com, a
-// direct, documented eBay-sold-listings API — the sole provider for
-// per-card sold comps; see getSoldCompsConfig()/hasApifyConfig()).
-// Function/variable names below still carry the "Apify" branding from
-// before that swap (searchApifySoldListings, hasApifyConfig, etc.) even
-// though they call SoldComps — deliberately NOT doing a mechanical rename of
-// those identifiers in the same change as the provider swap; that's better
-// done alongside splitting this file up (see README's "Known rough edges" /
-// src/app.js size) so a provider-behavior change and a pure rename aren't
-// bundled into one diff.
+// (caffein.dev~ebay-sold-listings, scraping eBay's own sold-listings pages)
+// -> SoldComps (api.sold-comps.com, a direct, documented eBay-sold-listings
+// API) -> back to the same Apify actor (2026-07-03: SoldComps' matching
+// quality had degraded on most cards, and the account's own historical
+// accuracy was better — see getApifyConfig()/hasApifyConfig()). SoldComps.com
+// is no longer called anywhere; APIFY_TOKEN + the actor now power BOTH
+// per-card sold-comp lookups and the separate market-heat feature (see
+// getApifyMarketHeatReport). Unlike SoldComps.com's flat monthly request
+// quota, the Apify actor bills per real run (observed $0.0001–$2+ per run
+// depending on keyword popularity) — see getApifyBudgetStatus() for the
+// local safety guard against repeating the 2026-07-03 account hard-limit
+// incident (Market Heat alone blew a $29/month cap in a few refreshes).
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const marketHeatCachePath = path.join(rootDir, "data", "market-heat-cache.json");
 const MARKET_HEAT_REFRESH_MS = Number(
@@ -365,7 +365,8 @@ function thresholdForMetadata(metadata = {}) {
   return 4;
 }
 
-// Market-heat only now — per-card sold-comp lookups use SoldComps below.
+// Powers both market-heat AND per-card sold-comp lookups (see the naming
+// note above) — the same actor, same token, same tuning knobs either way.
 function getApifyConfig() {
   return {
     token: process.env.APIFY_TOKEN || "",
@@ -381,94 +382,73 @@ function getApifyConfig() {
   };
 }
 
-const SOLD_COMPS_BASE_URL = "https://api.sold-comps.com";
+let apifyBudgetCache = null; // { checkedAt, status }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Read fresh on every call (not a load-time constant) so tests can override
+// it via process.env just before calling searchApifySoldListings — setting
+// it to 0 makes every check go through whatever fetch mock is live at call
+// time instead of reusing a stale cached status across test cases/files
+// that share this module's in-memory cache.
+function apifyBudgetCacheMs() {
+  const parsed = Number(process.env.APIFY_BUDGET_CACHE_MS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000;
 }
 
-// SoldComps (api.sold-comps.com) — direct eBay-sold-listings API, the sole
-// provider for per-card sold-comp search (CardHedge was fully removed after
-// upgrading the SoldComps plan). Falls back to the corresponding
-// APIFY_EBAY_* value above for any tuning knob left blank here.
-function getSoldCompsConfig() {
+async function fetchApifyAccountUsage(token) {
+  const response = await fetch(`https://api.apify.com/v2/users/me/limits?token=${encodeURIComponent(token)}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || `HTTP ${response.status}`;
+    throw new Error(`Apify account-limits request failed: ${message}`);
+  }
+  const usageUsd = Number(payload?.data?.current?.monthlyUsageUsd);
+  const limitUsd = Number(payload?.data?.limits?.maxMonthlyUsageUsd);
   return {
-    apiKey: process.env.SOLDCOMPS_API_KEY || "",
-    daysToScrape: clampPositiveInt(
-      Number(process.env.SOLDCOMPS_DAYS_TO_SCRAPE || process.env.APIFY_EBAY_SOLD_DAYS_TO_SCRAPE || 60),
-      1,
-      365,
-    ),
-    ebaySite: process.env.SOLDCOMPS_EBAY_SITE || process.env.APIFY_EBAY_SITE || "ebay.com",
-    sortOrder: process.env.SOLDCOMPS_SORT_ORDER || process.env.APIFY_EBAY_SORT_ORDER || "endedRecently",
-    itemLocation: process.env.SOLDCOMPS_ITEM_LOCATION || process.env.APIFY_EBAY_ITEM_LOCATION || "default",
-    categoryId: process.env.SOLDCOMPS_CATEGORY_ID || "0",
+    usageUsd: Number.isFinite(usageUsd) ? usageUsd : 0,
+    limitUsd: Number.isFinite(limitUsd) ? limitUsd : Infinity,
   };
 }
 
-// SoldComps' free tier caps out at 100 requests/month (separate from its
-// 60/min rate limit). This app doesn't know what plan is active, so it
-// tracks its own conservative monthly budget locally and fails clearly
-// before actually hitting the provider's quota and getting 403s on every
-// subsequent lookup for the rest of the billing cycle.
-// Overridable via SOLDCOMPS_USAGE_FILE so tests can point this at an
-// isolated temp file — Node's test runner runs separate *.test.js files
-// concurrently by default, and this file is real shared local state, not
-// something a backup/restore hook alone can safely serialize across files.
-function soldCompsUsagePath() {
-  return process.env.SOLDCOMPS_USAGE_FILE || path.join(rootDir, "data", "soldcomps-usage.json");
-}
-
-function currentUsageMonth() {
-  return new Date().toISOString().slice(0, 7); // "YYYY-MM"
-}
-
-function soldCompsMonthlyLimit() {
-  const parsed = Number(process.env.SOLDCOMPS_MONTHLY_REQUEST_LIMIT);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90;
-}
-
-async function loadSoldCompsUsage() {
-  try {
-    const raw = await fs.readFile(soldCompsUsagePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && parsed.month === currentUsageMonth()) {
-      return { month: parsed.month, count: Number(parsed.count) || 0 };
-    }
-  } catch {
-    // No usage file yet, or it's unreadable — start a fresh month.
+// Apify bills per real actor run rather than a flat monthly request count,
+// so — unlike SoldComps.com's simple local request counter — the actual
+// spend and cap live only on Apify's own account. Ask Apify directly
+// (cached briefly so a burst of card processing doesn't hammer this on every
+// single card) and refuse new runs once within APIFY_BUDGET_SAFETY_MARGIN_USD
+// of the cap, so a burst of lookups fails clearly and cheaply instead of
+// quietly repeating the 2026-07-03 incident where Market Heat alone blew
+// through the account's $29/month hard limit with no warning beforehand.
+async function getApifyBudgetStatus(token) {
+  if (apifyBudgetCache && Date.now() - apifyBudgetCache.checkedAt < apifyBudgetCacheMs()) {
+    return apifyBudgetCache.status;
   }
-  return { month: currentUsageMonth(), count: 0 };
+  const safetyMarginUsd = Math.max(0, Number(process.env.APIFY_BUDGET_SAFETY_MARGIN_USD) || 1);
+  let status;
+  try {
+    const { usageUsd, limitUsd } = await fetchApifyAccountUsage(token);
+    const remainingUsd = limitUsd - usageUsd;
+    status = { usageUsd, limitUsd, remainingUsd, hasBudget: remainingUsd > safetyMarginUsd };
+  } catch {
+    // Can't reach Apify's own account API right now — don't block card
+    // processing on that; let the real actor call surface its own error
+    // (e.g. the account's 403 hard-limit message) if the budget really is
+    // spent.
+    status = { usageUsd: null, limitUsd: null, remainingUsd: null, hasBudget: true };
+  }
+  apifyBudgetCache = { checkedAt: Date.now(), status };
+  return status;
 }
 
-async function saveSoldCompsUsage(usage) {
-  await fs.mkdir(path.dirname(soldCompsUsagePath()), { recursive: true });
-  await fs.writeFile(soldCompsUsagePath(), JSON.stringify(usage, null, 2));
-}
-
-async function hasSoldCompsBudget() {
-  const usage = await loadSoldCompsUsage();
-  return usage.count < soldCompsMonthlyLimit();
-}
-
-async function recordSoldCompsRequest() {
-  const usage = await loadSoldCompsUsage();
-  usage.count += 1;
-  await saveSoldCompsUsage(usage);
-  return usage;
-}
-
-// Exported for the health endpoint / manual inspection — not used in the
-// request path itself.
-export async function getSoldCompsUsageStatus() {
-  const usage = await loadSoldCompsUsage();
-  const limit = soldCompsMonthlyLimit();
-  return { month: usage.month, count: usage.count, limit, remaining: Math.max(0, limit - usage.count) };
+// Exported for the health endpoint / manual inspection.
+export async function getApifyUsageStatus() {
+  const config = getApifyConfig();
+  if (!config.token) return { configured: false };
+  const status = await getApifyBudgetStatus(config.token);
+  return { configured: true, ...status };
 }
 
 // Was named shouldForceApifyProvider back when it also chose between
 // CardHedge/Apify as sold-comp providers; now there's only one provider
-// (SoldComps), so its only remaining job is deciding whether a search
+// (Apify) again, so its only remaining job is deciding whether a search
 // should include both new/used condition (trading cards, non-sport cards)
 // instead of just "used".
 function isTradingCardMetadata(metadata = {}) {
@@ -495,7 +475,9 @@ function isTradingCardMetadata(metadata = {}) {
 
 function resolveApifySoldCount(metadata = {}) {
   const configuredCount = clampPositiveInt(
-    Number(process.env.SOLDCOMPS_COUNT || process.env.APIFY_EBAY_SOLD_COUNT || 50),
+    // SOLDCOMPS_COUNT kept as a legacy alias in case it's still set from the
+    // SoldComps.com era — APIFY_EBAY_SOLD_COUNT is the current name.
+    Number(process.env.APIFY_EBAY_SOLD_COUNT || process.env.SOLDCOMPS_COUNT || 15),
     10,
     100,
   );
@@ -811,7 +793,16 @@ export async function getApifyMarketHeatReport({
   }
   let cacheStatus = "cached";
 
-  if (refresh || !snapshot || !marketHeatFresh(snapshot)) {
+  // `refresh` used to force a brand-new Apify pull on demand regardless of
+  // cache age — that's exactly what let repeated "Refresh" clicks (each one
+  // firing a real, billed actor run per sport) blow through the Apify
+  // account's $29/month hard cap in a single afternoon. Market Heat now
+  // refreshes at most once per MARKET_HEAT_REFRESH_MS (7 days) no matter
+  // what — a page visit or a Refresh click only ever reads whatever's
+  // already cached; `refresh` is accepted for API compatibility but no
+  // longer has the power to bypass that.
+  void refresh;
+  if (!snapshot || !marketHeatFresh(snapshot)) {
     snapshot = await buildMarketHeatSnapshot({
       days: normalizedDays,
       sampleSize: normalizedSampleSize,
@@ -851,10 +842,10 @@ export async function getApifyMarketHeatReport({
   };
 }
 
-// Name kept as-is (see naming note at top of file) — checks whether the
-// sold-comp provider (SoldComps) is configured.
+// Checks whether the sold-comp provider (the real Apify actor — see naming
+// note at top of file) is configured.
 export function hasApifyConfig() {
-  return Boolean(getSoldCompsConfig().apiKey);
+  return Boolean(getApifyConfig().token);
 }
 
 function buildApifyKeywords(metadata = {}) {
@@ -1012,32 +1003,33 @@ export function buildApifyLookupKey(metadata = {}) {
   ].join("|");
 }
 
-// Name kept as-is (see naming note at top of file) — this calls SoldComps
-// (api.sold-comps.com) rather than the old Apify actor. The item shape
-// SoldComps returns (itemId/title/condition/soldPrice/shippingPrice/
-// totalPrice/endedAt/url/sellerUsername/sellerPositivePercent/
-// sellerFeedbackScore) matches what parseApifySoldListings/
-// normalizeSoldListing already expect closely enough that no changes were
-// needed there — only the HTTP call and its config are new.
+// Name kept as-is (see naming note at top of file) — this once again calls
+// the real Apify actor (caffein.dev~ebay-sold-listings) directly, the same
+// one market-heat uses. The item shape it returns (itemId/title/condition/
+// soldPrice/shippingPrice/totalPrice/endedAt/url/keyword/sellerUsername/
+// sellerPositivePercent/sellerFeedbackScore) is identical to what
+// parseApifySoldListings/normalizeSoldListing already expect — verified
+// directly against a live run — so no parsing changes were needed, only the
+// HTTP call and its config.
 export async function searchApifySoldListings(metadata = {}) {
-  const config = getSoldCompsConfig();
+  const config = getApifyConfig();
   const requestedCount = resolveApifySoldCount(metadata);
 
-  if (!config.apiKey) {
-    throw new Error("Missing SOLDCOMPS_API_KEY");
+  if (!config.token) {
+    throw new Error("Missing APIFY_TOKEN");
   }
 
-  if (!(await hasSoldCompsBudget())) {
-    const limit = soldCompsMonthlyLimit();
+  const budgetStatus = await getApifyBudgetStatus(config.token);
+  if (!budgetStatus.hasBudget) {
     throw new Error(
-      `SoldComps monthly request budget (${limit}) reached for this billing cycle — raise SOLDCOMPS_MONTHLY_REQUEST_LIMIT if you're on a higher-quota plan.`,
+      `Apify monthly usage ($${budgetStatus.usageUsd?.toFixed?.(2) ?? "?"} of a $${budgetStatus.limitUsd ?? "?"} cap) is exhausted for this billing cycle — raise the cap in your Apify account or wait for the cycle to reset.`,
     );
   }
 
   const keywords = buildApifyKeywords(metadata);
   if (!keywords.length) {
     return {
-      source: "soldcomps",
+      source: "apify",
       comps: [],
       importedCount: 0,
       rejectedCount: 0,
@@ -1056,57 +1048,17 @@ export async function searchApifySoldListings(metadata = {}) {
   const keywordsUsed = keywords.slice(0, queryLimit);
 
   for (const keyword of keywordsUsed) {
-    const params = new URLSearchParams({
+    // Unlike SoldComps.com's flat-quota scrape, each run here is a real,
+    // billed Apify actor call (observed $0.0001–$2+ per run depending on
+    // keyword popularity) — so, deliberately, no retry-on-empty-result here.
+    // A retry would double or triple the bill for a card that may
+    // legitimately have no sold comps.
+    const items = await fetchApifyMarketplaceSoldItems({
       keyword,
-      daysToScrape: String(config.daysToScrape),
-      count: String(requestedCount),
-      ebaySite: config.ebaySite,
-      sortOrder: config.sortOrder,
-      itemLocation: config.itemLocation,
+      daysToScrape: config.daysToScrape,
+      count: requestedCount,
       itemCondition: isTradingCardMetadata(metadata) || metadata.gradedFlag ? "any" : "used",
-      categoryId: config.categoryId,
     });
-
-    // SoldComps is a live scrape, not a stable index — the exact same
-    // keyword genuinely returns 0 items on a real fraction of calls (a
-    // production card was observed alternating between 0 and 9 items across
-    // otherwise-identical back-to-back requests), which used to surface as
-    // "comps not coming through" whenever a Save & Reprocess happened to hit
-    // one of the empty draws. Retry a couple of times, but only when the
-    // scrape itself came back empty — a non-empty scrape that our own
-    // relevance filtering later rejects is a real "no match", not flakiness,
-    // and shouldn't be retried.
-    let items = [];
-    const maxAttempts = 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // The budget was only confirmed once, up front, before the very first
-      // request of the whole call. Re-check it before each retry too — a
-      // retry is still a real billed request, and without this a single
-      // searchApifySoldListings() call could burn straight through the
-      // configured monthly cap in one shot instead of stopping at it.
-      if (attempt > 1 && !(await hasSoldCompsBudget())) break;
-      const response = await fetch(`${SOLD_COMPS_BASE_URL}/v1/scrape?${params.toString()}`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          Accept: "application/json",
-        },
-      });
-
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const message =
-          payload?.error?.message || payload?.message || payload?.error || `HTTP ${response.status}`;
-        throw new Error(`SoldComps sold listings request failed (${response.status}): ${message}`);
-      }
-      // Count this against the monthly budget only once we know the request
-      // itself succeeded.
-      await recordSoldCompsRequest();
-
-      items = Array.isArray(payload?.items) ? payload.items : [];
-      if (items.length || attempt === maxAttempts) break;
-      await sleep(500);
-    }
     const queryParallel = keyword.includes("Blue Refractor")
       ? "Blue Refractor"
       : keyword.includes("Holo")
@@ -1130,7 +1082,7 @@ export async function searchApifySoldListings(metadata = {}) {
   const limit = requestedCount;
   const rejectedCount = parsedRuns.reduce((sum, entry) => sum + (entry.rejectedCount || 0), 0);
   return {
-    source: "soldcomps",
+    source: "apify",
     comps: comps.slice(0, limit),
     importedCount: Math.min(comps.length, limit),
     rejectedCount,

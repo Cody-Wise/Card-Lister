@@ -606,7 +606,7 @@ export async function searchEbayListings({
 } = {}) {
   const resultLimit = Math.max(
     metadata.fastMode ? 15 : 1,
-    Math.min(Number(process.env.EBAY_BROWSE_ACTIVE_COUNT || 50), 50),
+    Math.min(Number(process.env.EBAY_BROWSE_ACTIVE_COUNT || 15), 50),
   );
   const categoryId = resolveBrowseCategoryId(metadata);
   const searches = [];
@@ -729,7 +729,7 @@ export async function searchEbaySoldListings({
 } = {}) {
   const resultLimit = Math.max(
     metadata.fastMode ? 15 : 1,
-    Math.min(Number(process.env.EBAY_BROWSE_SOLD_COUNT || 50), 50),
+    Math.min(Number(process.env.EBAY_BROWSE_SOLD_COUNT || 15), 50),
   );
   const activeMatches = Array.isArray(matchedListings) && matchedListings.length
     ? matchedListings

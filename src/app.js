@@ -42,7 +42,7 @@ import {
   searchApifySoldListings,
   getApifyMarketHeatReport,
   buildApifyLookupKey,
-  getSoldCompsUsageStatus,
+  getApifyUsageStatus,
   hasApifyConfig,
 } from "./services/apify.js";
 import { renameFile, getFileInfo, listFolder, createFolder, moveFile } from "./services/drive.js";
@@ -1947,7 +1947,7 @@ export async function handler(req, res) {
   }
 
   if (req.method === "GET" && pathname === "/api/health") {
-    const soldCompsUsage = await getSoldCompsUsageStatus();
+    const apifyUsage = await getApifyUsageStatus();
     return sendJson(res, 200, {
       ok: true,
       service: "automatic-sports-card-listing",
@@ -1958,14 +1958,10 @@ export async function handler(req, res) {
       apify: {
         hasApifyConfig: Boolean(process.env.APIFY_TOKEN),
         actorId: process.env.APIFY_EBAY_SOLD_ACTOR_ID || "caffein.dev~ebay-sold-listings",
-        note: "market-heat feature only; sold-comp lookups use soldcomps below",
+        note: "powers both per-card sold-comp lookups and market-heat; bills per real run, see usage below",
+        usage: apifyUsage,
       },
-      soldcomps: {
-        hasSoldCompsConfig: Boolean(process.env.SOLDCOMPS_API_KEY),
-        baseUrl: "https://api.sold-comps.com",
-        usage: soldCompsUsage,
-      },
-      marketDataProvider: process.env.SOLDCOMPS_API_KEY ? "soldcomps" : "none",
+      marketDataProvider: process.env.APIFY_TOKEN ? "apify" : "none",
       openai: {
         hasVisionConfig: Boolean(process.env.OPENAI_API_KEY),
         model: process.env.OPENAI_VISION_MODEL || "gpt-4.1",
@@ -3027,7 +3023,7 @@ export async function handler(req, res) {
   if (req.method === "POST" && pathname === "/api/ebay/listings/reprice") {
     const body = await readJson(req);
     if (!hasApifyConfig()) {
-      return sendJson(res, 400, { error: "SOLDCOMPS_API_KEY is not configured." });
+      return sendJson(res, 400, { error: "APIFY_TOKEN is not configured." });
     }
 
     const listingId = String(body.listingId || "").trim();

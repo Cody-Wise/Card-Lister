@@ -1,5 +1,5 @@
 import { searchEbayListings, searchEbaySoldListings } from "./ebay-browse.js";
-import { searchApifySoldListings } from "./apify.js";
+import { searchApifySoldListings, hasApifyConfig } from "./apify.js";
 
 function dedupeComps(comps = []) {
   const seen = new Set();
@@ -14,32 +14,6 @@ function dedupeComps(comps = []) {
     unique.push(comp);
   }
   return unique;
-}
-
-function shouldUseApifySoldComps(metadata = {}) {
-  const haystack = String(
-    [
-      metadata.sport,
-      metadata.candidateSport,
-      metadata.setName,
-      metadata.titleHint,
-      metadata.playerName,
-      metadata.ebayTitle,
-      metadata.title,
-      metadata.notes,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  )
-    .toLowerCase()
-    .trim();
-  if (!haystack) return false;
-  return (
-    haystack.includes("trading cards") ||
-    /\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/.test(
-      haystack,
-    )
-  );
 }
 
 export async function getLiveCardComps(
@@ -58,7 +32,12 @@ export async function getLiveCardComps(
       active: liveActive,
     };
   }
-  const soldSource = shouldUseApifySoldComps(metadata)
+  // Previously gated to TCG/non-sport metadata only, falling back to eBay's
+  // own sold-listings search for every other (i.e. most) cards — broadened
+  // 2026-07-03 at the user's request, since Apify is the more accurate
+  // provider and this path (manual reprice, the repricing scheduler) was
+  // quietly the one place still not using it for regular sports cards.
+  const soldSource = hasApifyConfig()
     ? await searchApifySoldListings(metadata)
     : {
         comps: await searchEbaySoldListings({

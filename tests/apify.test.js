@@ -1,144 +1,95 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
-import { promises as fsp } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { calculatePrice } from "../src/services/pricing.js";
 import { parseApifySoldListings, searchApifySoldListings } from "../src/services/apify.js";
 import { searchEbayListings } from "../src/services/ebay-browse.js";
 
-// Several tests below call searchApifySoldListings() with a real (mocked)
-// SOLDCOMPS_API_KEY set, which would otherwise increment the real local
-// monthly usage counter at data/soldcomps-usage.json. Point it at an
-// isolated per-file temp path instead — Node's test runner runs separate
-// *.test.js files concurrently by default, so sharing the real file with
-// other suites (e.g. soldcomps-budget.test.js) would race.
-//
-// That isolated file still persists ACROSS separate `node --test` runs
-// (it's a real file on disk, not reset by the test runner), so running this
-// suite repeatedly in one calendar month eventually pushes the counter past
-// the default 90-request budget and starts failing every test that expects
-// a successful call. Reset it to 0 up front so each run starts clean.
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const soldCompsUsageFile = path.join(rootDir, "tmp", "test-soldcomps-usage-apify.json");
-process.env.SOLDCOMPS_USAGE_FILE = soldCompsUsageFile;
-await fsp.mkdir(path.dirname(soldCompsUsageFile), { recursive: true });
-await fsp.writeFile(
-  soldCompsUsageFile,
-  JSON.stringify({ month: new Date().toISOString().slice(0, 7), count: 0 }),
-);
+// Every check against Apify's real account-usage endpoint should go through
+// whatever fetch mock is live for the current test, not a stale cached
+// status from an earlier test case (this module caches that status in
+// memory, and Node's test runner runs separate *.test.js files concurrently
+// by default).
+process.env.APIFY_BUDGET_CACHE_MS = "0";
 
-test("searchApifySoldListings calls SoldComps at the documented endpoint with a Bearer auth header", async (t) => {
+// Wraps a per-test actor-call handler with a permissive intercept for
+// Apify's account-usage endpoint (searchApifySoldListings checks this before
+// every call), so individual tests only need to handle the actual
+// run-sync-get-dataset-items request they care about.
+function mockApifyFetch(actorHandler) {
+  return async (url, init) => {
+    const stringUrl = String(url);
+    if (stringUrl.includes("/v2/users/me/limits")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { limits: { maxMonthlyUsageUsd: 1000 }, current: { monthlyUsageUsd: 0 } } }),
+      };
+    }
+    return actorHandler(url, init);
+  };
+}
+
+function keywordFromRequest(init) {
+  const body = JSON.parse(init.body);
+  return body.keywords[0];
+}
+
+test("searchApifySoldListings calls the Apify actor's run-sync-get-dataset-items endpoint with the token as a query param", async (t) => {
   const originalFetch = global.fetch;
-  const originalKey = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "sc_test_key_123";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "apify_test_token_123";
 
   t.after(() => {
     global.fetch = originalFetch;
-    if (originalKey === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+    if (originalToken === undefined) {
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalKey;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let requestedUrl = null;
   let requestedInit = null;
-  global.fetch = async (url, init) => {
+  global.fetch = mockApifyFetch(async (url, init) => {
     requestedUrl = url;
     requestedInit = init;
     return { ok: true, status: 200, json: async () => ({ items: [] }) };
-  };
+  });
 
   await searchApifySoldListings({ playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" });
 
   const parsed = new URL(requestedUrl);
-  assert.equal(`${parsed.protocol}//${parsed.host}`, "https://api.sold-comps.com");
-  assert.equal(parsed.pathname, "/v1/scrape");
-  assert.ok(parsed.searchParams.get("keyword"));
-  assert.equal(requestedInit.method, "GET");
-  assert.equal(requestedInit.headers.Authorization, "Bearer sc_test_key_123");
+  assert.equal(`${parsed.protocol}//${parsed.host}`, "https://api.apify.com");
+  assert.ok(parsed.pathname.includes("/run-sync-get-dataset-items"));
+  assert.equal(parsed.searchParams.get("token"), "apify_test_token_123");
+  assert.equal(requestedInit.method, "POST");
+  assert.ok(keywordFromRequest(requestedInit));
 });
 
-test("retries a keyword that scrapes back empty before giving up, and stops as soon as one succeeds", async (t) => {
-  // SoldComps is a live scrape, not a stable index — the same keyword can
-  // legitimately return 0 items on one call and real results moments later
-  // (observed directly against production: 0, 0, 0, 9, 0, 9 across six
-  // back-to-back identical requests). Without a retry, a Save & Reprocess
-  // that happened to land on an empty draw looked like "comps aren't coming
-  // through" even though comps genuinely existed.
+test("does not retry a keyword that comes back empty — unlike SoldComps.com, each Apify run is a real billed cost", async (t) => {
+  // SoldComps.com used to retry an empty scrape a couple of times since it
+  // was a flat monthly quota. The real Apify actor bills per run (observed
+  // $0.0001–$2+ per run), so retrying an empty result would just multiply
+  // the bill for a card that may legitimately have no comps — deliberately
+  // a single attempt per keyword now.
   const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let callCount = 0;
-  global.fetch = async () => {
-    callCount += 1;
-    if (callCount < 3) {
-      return { ok: true, status: 200, json: async () => ({ items: [] }) };
-    }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        items: [
-          {
-            itemId: "retry_success_1",
-            title: "2019 Panini Score Kyler Murray #384 Rookie RC",
-            condition: "Pre-Owned",
-            soldPrice: "9.99",
-            shippingPrice: "0.00",
-            totalPrice: "9.99",
-            endedAt: "2026-06-07T00:00:00.000Z",
-            url: "https://www.ebay.com/itm/retry_success_1",
-            listingType: "buy_it_now",
-          },
-        ],
-      }),
-    };
-  };
-
-  const result = await searchApifySoldListings({
-    playerName: "Kyler Murray",
-    year: 2019,
-    setName: "Score",
-    cardNumber: "384",
-    rookieFlag: true,
-  });
-
-  assert.equal(callCount, 3);
-  assert.equal(result.comps.length, 1);
-  assert.ok(result.comps[0].title.includes("Kyler Murray"));
-});
-
-test("gives up after exhausting retries when a keyword keeps scraping back empty", async (t) => {
-  const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
-
-  t.after(() => {
-    global.fetch = originalFetch;
-    if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
-    } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
-    }
-  });
-
-  let callCount = 0;
-  global.fetch = async () => {
+  global.fetch = mockApifyFetch(async () => {
     callCount += 1;
     return { ok: true, status: 200, json: async () => ({ items: [] }) };
-  };
+  });
 
   const result = await searchApifySoldListings({
     playerName: "Nobody Special",
@@ -147,8 +98,43 @@ test("gives up after exhausting retries when a keyword keeps scraping back empty
     cardNumber: "999",
   });
 
-  assert.equal(callCount, 3);
+  assert.equal(callCount, 1);
   assert.equal(result.comps.length, 0);
+});
+
+test("refuses to run when the account's real usage is within the safety margin of its cap", async (t) => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    if (originalToken === undefined) {
+      delete process.env.APIFY_TOKEN;
+    } else {
+      process.env.APIFY_TOKEN = originalToken;
+    }
+  });
+
+  let actorCalls = 0;
+  global.fetch = async (url) => {
+    const stringUrl = String(url);
+    if (stringUrl.includes("/v2/users/me/limits")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { limits: { maxMonthlyUsageUsd: 40 }, current: { monthlyUsageUsd: 39.5 } } }),
+      };
+    }
+    actorCalls += 1;
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+
+  await assert.rejects(
+    () => searchApifySoldListings({ playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" }),
+    /usage.*exhausted/i,
+  );
+  assert.equal(actorCalls, 0, "should not spend a real run once within the safety margin of the cap");
 });
 
 test("parses apify sold listings and filters noisy lots", () => {
@@ -239,22 +225,22 @@ test("keeps only base comps when base hint is set", () => {
 
 test("searches base cards without pulling a parallel lane", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let callCount = 0;
-  global.fetch = async (_url, options) => {
+  global.fetch = mockApifyFetch(async (_url, init) => {
     callCount += 1;
-    const keyword = new URL(_url).searchParams.get("keyword") || "";
+    const keyword = keywordFromRequest(init);
     const rows = [
       {
         keyword,
@@ -287,7 +273,7 @@ test("searches base cards without pulling a parallel lane", async (t) => {
       status: 200,
       json: async () => ({ items: rows }),
     };
-  };
+  });
 
   const result = await searchApifySoldListings({
     playerName: "Caitlin Clark",
@@ -306,23 +292,23 @@ test("searches base cards without pulling a parallel lane", async (t) => {
 
 test("searches parallel-aware apify comps and prices Islam around four dollars", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let callCount = 0;
   let firstKeyword = null;
-  global.fetch = async (_url, options) => {
+  global.fetch = mockApifyFetch(async (_url, init) => {
     callCount += 1;
-    const keyword = new URL(_url).searchParams.get("keyword") || "";
+    const keyword = keywordFromRequest(init);
     if (!firstKeyword) firstKeyword = keyword;
     const rows =
       callCount === 1
@@ -384,7 +370,7 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
       status: 200,
       json: async () => ({ items: rows }),
     };
-  };
+  });
 
   const result = await searchApifySoldListings({
     playerName: "Islam Makhachev",
@@ -417,23 +403,23 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
 
 test("searches autographed serial-numbered cards with autograph hints and denominator serials", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let callCount = 0;
   let firstKeyword = null;
-  global.fetch = async (_url, options) => {
+  global.fetch = mockApifyFetch(async (_url, init) => {
     callCount += 1;
-    const keyword = new URL(_url).searchParams.get("keyword") || "";
+    const keyword = keywordFromRequest(init);
     if (!firstKeyword) firstKeyword = keyword;
     return {
       ok: true,
@@ -455,7 +441,7 @@ test("searches autographed serial-numbered cards with autograph hints and denomi
         ],
       }),
     };
-  };
+  });
 
   const result = await searchApifySoldListings({
     playerName: "Aurélien Tchouaméni",
@@ -546,22 +532,22 @@ test("searches autographed serial-numbered browse listings with autograph hints 
 
 test("searches generic rookie cards as rookie rc instead of rated rookie", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.SOLDCOMPS_API_KEY;
-  process.env.SOLDCOMPS_API_KEY = "test-key";
+  const originalToken = process.env.APIFY_TOKEN;
+  process.env.APIFY_TOKEN = "test-token";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.SOLDCOMPS_API_KEY;
+      delete process.env.APIFY_TOKEN;
     } else {
-      process.env.SOLDCOMPS_API_KEY = originalToken;
+      process.env.APIFY_TOKEN = originalToken;
     }
   });
 
   let callCount = 0;
-  global.fetch = async (_url, options) => {
+  global.fetch = mockApifyFetch(async (_url, init) => {
     callCount += 1;
-    const keyword = new URL(_url).searchParams.get("keyword") || "";
+    const keyword = keywordFromRequest(init);
     return {
       ok: true,
       status: 200,
@@ -596,7 +582,7 @@ test("searches generic rookie cards as rookie rc instead of rated rookie", async
           : [],
       }),
     };
-  };
+  });
 
   const result = await searchApifySoldListings({
     playerName: "Shai Gilgeous-Alexander",
