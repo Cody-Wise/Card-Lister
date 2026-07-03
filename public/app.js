@@ -33,6 +33,8 @@ const reviewBrand = document.getElementById("reviewBrand");
 const reviewMpn = document.getElementById("reviewMpn");
 const reviewRookieMode = document.getElementById("reviewRookieMode");
 const reviewPrintRun = document.getElementById("reviewPrintRun");
+const reviewTeam = document.getElementById("reviewTeam");
+const reviewLeague = document.getElementById("reviewLeague");
 const reviewSerialNumber = document.getElementById("reviewSerialNumber");
 const reviewCompGradeOverride = document.getElementById("reviewCompGradeOverride");
 const reviewCompMatchMode = document.getElementById("reviewCompMatchMode");
@@ -554,6 +556,8 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewMpn.value = card.mpn || "";
   reviewRookieMode.value = rookieModeFromCard(card);
   reviewPrintRun.value = card.printRun || "";
+  reviewTeam.value = card.candidateTeam || "";
+  reviewLeague.value = card.candidateLeague || "";
   reviewSerialNumber.value = card.serialNumber || "";
   reviewGradingCompany.value = card.gradingCompany || inferGradingCompanyFromGrade(card.candidateGrade);
   reviewCertificationNumber.value = card.certificationNumber || "";
@@ -621,6 +625,8 @@ function buildReviewPayload() {
     mpn: reviewMpn.value,
     rookieMode: reviewRookieMode.value,
     printRun: reviewPrintRun.value,
+    team: reviewTeam.value,
+    league: reviewLeague.value,
     serialNumber: reviewSerialNumber.value,
     compGradeOverride: reviewCompGradeOverride?.value || "",
     compMatchMode: reviewCompMatchMode?.value || "auto",

@@ -1713,6 +1713,8 @@ function buildReviewPatch(body = {}, existingCard = {}) {
     candidateBrand: normalizeText(
       body.brand ?? body.candidateBrand ?? existingCard.candidateBrand,
     ),
+    candidateTeam: normalizeText(body.team ?? body.candidateTeam ?? existingCard.candidateTeam) || null,
+    candidateLeague: normalizeText(body.league ?? body.candidateLeague ?? existingCard.candidateLeague) || null,
     mpn: normalizeText(body.mpn ?? existingCard.mpn),
     candidateParallel: normalizeText(
       body.parallel ?? body.candidateParallel ?? existingCard.candidateParallel,
@@ -1762,6 +1764,8 @@ function buildReviewOverrideMap(body = {}, existingOverrides = {}) {
   mark(["cardNumber", "candidateCardNumber"], "candidateCardNumber");
   mark(["parallel", "candidateParallel"], "candidateParallel");
   mark(["brand", "candidateBrand"], "candidateBrand");
+  mark(["team", "candidateTeam"], "candidateTeam");
+  mark(["league", "candidateLeague"], "candidateLeague");
   mark(["grade", "candidateGrade"], "candidateGrade");
   mark(["gradingCompany", "professionalGrader"], "gradingCompany");
   mark(["certificationNumber", "certificateNumber"], "certificationNumber");
