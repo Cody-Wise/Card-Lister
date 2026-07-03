@@ -13,7 +13,6 @@ const loadEbaySetupButton = document.getElementById("loadEbaySetupButton");
 const closeReviewButton = document.getElementById("closeReviewButton");
 const importApifyButton = document.getElementById("importApifyButton");
 const apifyTargetCard = document.getElementById("apifyTargetCard");
-const apifySource = document.getElementById("apifySource");
 const apifyPayload = document.getElementById("apifyPayload");
 const apifyMessage = document.getElementById("apifyMessage");
 const activeBatchSelect = document.getElementById("activeBatchSelect");
@@ -378,8 +377,9 @@ function applyEbayListingMode(mode) {
 
 function formatCompSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
-  if (normalized.startsWith("cardhedge") || normalized.startsWith("cardsight")) return "CardSight";
-  if (normalized.startsWith("apify")) return "Apify";
+  // "apify" covers cards priced before the switch to SoldComps; both show
+  // the same label since they're the same "direct eBay sold-search" concept.
+  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "SoldComps";
   if (normalized === "browse_active") return "eBay Browse";
   return source || "unknown";
 }
@@ -466,7 +466,8 @@ function renderReviewSummary(detail) {
   if (pe.soldAnchor != null) weightLines.push(`Sold anchor: ${money(pe.soldAnchor)}`);
   if (pe.soldMedian != null) weightLines.push(`Sold median: ${money(pe.soldMedian)} · P25: ${money(pe.soldP25)}`);
   if (pe.activeMedian != null) weightLines.push(`Active median: ${money(pe.activeMedian)} · P25: ${money(pe.activeP25)} · floor: ${money(pe.activeFloor)}`);
-  const isApifySource = String(card.compMatchProvider || card.externalCompSource || "").toLowerCase() === "apify";
+  const soldCompSourceValue = String(card.compMatchProvider || card.externalCompSource || "").toLowerCase();
+  const isApifySource = soldCompSourceValue === "apify" || soldCompSourceValue === "soldcomps";
   const batch = state.batches.find((b) => b.id === card.batchId);
   const gradedSummary = [
     card.candidateGrade ? `Grade: ${card.candidateGrade}` : null,
@@ -485,7 +486,7 @@ function renderReviewSummary(detail) {
     `Print run: ${card.printRun || "n/a"}${card.serialNumber ? ` · Serial: ${card.serialNumber}` : ""} · Parallel source: ${card.parallelProvider || "n/a"} · Comp grade: ${card.compGradeOverride || "Auto detect"} · Comp match: ${card.compMatchMode || "auto"}`,
     gradedSummary || "Grade: n/a",
     `Sold comps: ${soldCount} · Active: ${activeCount}`,
-    ...(isApifySource && card.apifySearchQuery ? [`Apify query: ${card.apifySearchQuery}`] : []),
+    ...(isApifySource && card.apifySearchQuery ? [`Comp search query: ${card.apifySearchQuery}`] : []),
     ...(weightLines.length ? [`Pricing: ${weightLines.join(" · ")}`] : []),
     ...(card.pricingReason ? [`Reason: ${card.pricingReason}`] : []),
   ];
@@ -506,9 +507,6 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   ebayListingTitle.value = "";
   ebaySpecifics.innerHTML = `<div class="muted">Loading eBay preview...</div>`;
   const detail = await api(`/api/card-items/${cardId}`);
-  detail.cardHedgeRecentSales = Array.isArray(detail.cardHedgeRecentSales)
-    ? detail.cardHedgeRecentSales
-    : [];
   reviewState.cardId = cardId;
   rememberReviewCard(cardId);
   reviewState.details = detail;
@@ -777,7 +775,7 @@ function listingRepricingStatusLabel(repricing) {
 function listingRepricingSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
   if (normalized === "ebay_image_search") return "eBay comps";
-  if (normalized.startsWith("cardhedge") || normalized.startsWith("cardsight")) return "CardSight";
+  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "SoldComps";
   return "Suggested";
 }
 
@@ -932,7 +930,7 @@ function renderListingsDashboard(data) {
       </div>
       <div class="sales-card-meta">
         ${listing.cardId ? `<button class="btn btn-sm btn-outline" data-action="review-sales-card" data-id="${salesEscape(listing.cardId)}">Open card</button>` : ""}
-        <button class="btn btn-sm btn-outline" data-action="manual-cardhedge-reprice" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-offer-id="${salesEscape(listing.offerId || "")}" data-card-id="${salesEscape(listing.cardId || "")}" data-price="${salesEscape(String(listing.currentPrice ?? ""))}" data-title="${salesEscape(listing.title || "")}">${Number.isFinite(listing.repricing?.targetPrice) ? "Refresh comps" : "Check comps"}</button>
+        <button class="btn btn-sm btn-outline" data-action="manual-comp-reprice" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-offer-id="${salesEscape(listing.offerId || "")}" data-card-id="${salesEscape(listing.cardId || "")}" data-price="${salesEscape(String(listing.currentPrice ?? ""))}" data-title="${salesEscape(listing.title || "")}">${Number.isFinite(listing.repricing?.targetPrice) ? "Refresh comps" : "Check comps"}</button>
         <button class="btn btn-sm btn-outline" data-action="edit-listing-price" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-offer-id="${salesEscape(listing.offerId || "")}" data-format="${salesEscape(listing.format || "")}" data-price="${salesEscape(String(listing.currentPrice ?? ""))}">Edit price</button>
         ${listing.listingUrl ? `<a class="sales-dashboard-link" href="${salesEscape(listing.listingUrl)}" target="_blank" rel="noopener">View item</a>` : ""}
       </div>
@@ -943,9 +941,9 @@ function renderListingsDashboard(data) {
   if (data?.analyticsError) {
     listingsStatus.textContent += ` · sales analytics unavailable: ${data.analyticsError}`;
   }
-  const queue = data?.cardHedgeQueue || null;
+  const queue = data?.externalRepriceQueue || null;
   if (queue && ((queue.offerQueueLength || 0) > 0 || queue.offerQueueActive || (queue.scheduledThisLoad || 0) > 0)) {
-    listingsStatus.textContent += ` · CardSight sync ${queue.offerQueueActive ? "running" : "queued"} (${queue.offerQueueLength || 0} waiting, ${queue.scheduledThisLoad || 0}/${queue.perLoadLimit || 0} scheduled this load)`;
+    listingsStatus.textContent += ` · Sold-comp sync ${queue.offerQueueActive ? "running" : "queued"} (${queue.offerQueueLength || 0} waiting, ${queue.scheduledThisLoad || 0}/${queue.perLoadLimit || 0} scheduled this load)`;
   }
 }
 
@@ -1285,13 +1283,9 @@ function marketHeatUpdatedLabel(dateValue) {
   });
 }
 
-function marketHeatLastSoldLabel(player, report) {
+function marketHeatLastSoldLabel(player) {
   if (player?.lastSoldAt) {
     return salesEscape(salesDateLabel(player.lastSoldAt));
-  }
-  if (report?.source === "cardhedge_market_heat") {
-    const days = Number(report?.windowDays || 7);
-    return days <= 1 ? "Within Last 24 Hours" : `Within Last ${days} Days`;
   }
   return "Unknown";
 }
@@ -1304,7 +1298,6 @@ function getMarketHeatPlayerInsight(playerKey) {
   if (!playerKey) return {};
   if (!marketHeatState.playerInsights[playerKey]) {
     marketHeatState.playerInsights[playerKey] = {
-      recent: null,
       comps: null,
       loadingMode: "",
       status: "",
@@ -1325,7 +1318,7 @@ function marketHeatInsightSummaryHtml(label, result) {
   const match = result.cardMatch || null;
   const pricing = result.pricingSummary || null;
   const details = [
-    result.source ? `Source: ${String(result.source).toLowerCase().startsWith("cardhedge") ? "CardSight" : result.source}` : null,
+    result.source ? `Source: ${formatCompSourceLabel(result.source)}` : null,
     result.loadedCount != null ? `Loaded: ${result.loadedCount}` : null,
     result.rejectedCount != null ? `Rejected: ${result.rejectedCount}` : null,
     match?.description ? `Match: ${match.description}` : null,
@@ -1345,28 +1338,14 @@ function marketHeatInsightWarningsHtml(result) {
 
 function marketHeatInsightSectionsHtml(selection) {
   const insight = getMarketHeatPlayerInsight(selection?.playerKey);
-  const recentHtml = insight.recent
-    ? `
-      ${marketHeatInsightSummaryHtml("Recent CardSight sales", insight.recent)}
-      ${marketHeatInsightWarningsHtml(insight.recent)}
-      ${renderCompList(
-        "Recent CardSight sales",
-        Array.isArray(insight.recent.sales) ? insight.recent.sales : [],
-        "No recent CardSight sales loaded.",
-        null,
-        null,
-        12,
-      )}
-    `
-    : "";
   const compsHtml = insight.comps
     ? `
-      ${marketHeatInsightSummaryHtml("CardSight player comps", insight.comps)}
+      ${marketHeatInsightSummaryHtml("Player comps", insight.comps)}
       ${marketHeatInsightWarningsHtml(insight.comps)}
       ${renderCompList(
-        "CardSight player comps",
+        "Player comps",
         Array.isArray(insight.comps.comps) ? insight.comps.comps : [],
-        "No CardSight comps loaded.",
+        "No comps loaded.",
         null,
         null,
         20,
@@ -1377,17 +1356,11 @@ function marketHeatInsightSectionsHtml(selection) {
     <div class="form-actions">
       <button
         class="btn btn-sm btn-outline"
-        data-market-heat-detail-action="recent"
-        ${insight.loadingMode ? "disabled" : ""}
-      >${insight.loadingMode === "recent" ? "Loading recent sales..." : "Load recent sales"}</button>
-      <button
-        class="btn btn-sm btn-outline"
         data-market-heat-detail-action="comps"
         ${insight.loadingMode ? "disabled" : ""}
-      >${insight.loadingMode === "comps" ? "Loading CardSight comps..." : "Load CardSight comps"}</button>
+      >${insight.loadingMode === "comps" ? "Loading comps..." : "Load comps"}</button>
     </div>
     ${insight.status ? `<div class="market-heat-note muted">${salesEscape(insight.status)}</div>` : ""}
-    ${recentHtml}
     ${compsHtml}
   `;
 }
@@ -1459,30 +1432,25 @@ async function loadMarketHeatPlayerInsight(mode) {
   const report = marketHeatState.report;
   const selection = getMarketHeatSelection(report);
   if (!selection) {
-    setMarketHeatDetailMessage("Player detail", "Select a player before loading CardSight insight.");
+    setMarketHeatDetailMessage("Player detail", "Select a player before loading comps.");
     return;
   }
   const insight = getMarketHeatPlayerInsight(selection.playerKey);
   const metadata = marketHeatSelectionMetadata(selection);
   insight.loadingMode = mode;
-  insight.status = mode === "comps"
-    ? "Loading CardSight comps..."
-    : "Loading recent CardSight sales...";
+  insight.status = "Loading comps...";
   renderMarketHeatDetail(report);
 
   try {
     const params = new URLSearchParams();
-    params.set("mode", mode);
     params.set("player", metadata.playerName);
     params.set("sport", metadata.sport);
-    params.set("count", mode === "comps" ? "20" : "8");
+    params.set("count", "20");
     const result = await api(`/api/ebay/market-heat/player-insight?${params.toString()}`, {
       cache: "no-store",
     });
     insight[mode] = result;
-    insight.status = mode === "comps"
-      ? `Loaded ${result.loadedCount || 0} CardSight comps for ${metadata.playerName}.`
-      : `Loaded ${result.loadedCount || 0} recent CardSight sales for ${metadata.playerName}.`;
+    insight.status = `Loaded ${result.loadedCount || 0} comps for ${metadata.playerName}.`;
   } catch (error) {
     insight.status = error.message;
   } finally {
@@ -1540,7 +1508,7 @@ function renderMarketHeatDetail(data) {
         <div>
           <div class="market-heat-rank">#${player?.rank || "-"}</div>
           <div class="sales-card-title">${salesEscape(player?.player || "Unknown player")}</div>
-          <div class="muted">${salesEscape(sportGroup?.sport || "Unknown sport")} · ${salesEscape(data?.source === "cardhedge_market_heat" ? "CardSight" : "Apify")}</div>
+          <div class="muted">${salesEscape(sportGroup?.sport || "Unknown sport")} · ${salesEscape("Apify")}</div>
         </div>
         <div class="listing-price-block">
           <strong>${player?.unitsSold || 0} sold</strong>
@@ -1589,7 +1557,7 @@ function renderMarketHeatReport(data) {
       </div>
       <div class="listing-summary-card">
         <span class="listing-summary-label">Source</span>
-        <strong>${salesEscape(data?.source === "cardhedge_market_heat" ? "CardSight" : "Apify")}</strong>
+        <strong>${salesEscape("Apify")}</strong>
       </div>
       <div class="listing-summary-card">
         <span class="listing-summary-label">Window</span>
@@ -1673,7 +1641,7 @@ function renderMarketHeatReport(data) {
 
   renderMarketHeatDetail(data);
 
-  marketHeatStatus.textContent = `Loaded ${sports.length} sport${sports.length === 1 ? "" : "s"} · ${data?.windowDays || 7}-day window · ${data?.sampleSizePerSport || 500} rows per sport · Top ${Math.min(data?.limitPlayers || 50, 50)} players · ${data?.source === "cardhedge_market_heat" ? "CardSight" : "Apify"} ${data?.cacheStatus === "refreshed" ? "refreshed" : "cached"}`;
+  marketHeatStatus.textContent = `Loaded ${sports.length} sport${sports.length === 1 ? "" : "s"} · ${data?.windowDays || 7}-day window · ${data?.sampleSizePerSport || 500} rows per sport · Top ${Math.min(data?.limitPlayers || 50, 50)} players · ${"Apify"} ${data?.cacheStatus === "refreshed" ? "refreshed" : "cached"}`;
 }
 
 async function loadMarketHeatReport({ forceRefresh = false } = {}) {
@@ -2434,17 +2402,14 @@ importApifyButton.addEventListener("click", async () => {
   try {
     const cardId = apifyTargetCard.value;
     if (!cardId) throw new Error("Select a card first.");
-    const source = apifySource.value || "apify";
     const raw = apifyPayload.value.trim();
-    if (source !== "cardhedge" && !raw) {
-      throw new Error("Paste Apify JSON first.");
+    if (!raw) {
+      throw new Error("Paste sold comp JSON first.");
     }
 
-    const parsed = raw ? JSON.parse(raw) : {};
-    const payload = Array.isArray(parsed)
-      ? { rows: parsed, source }
-      : { ...parsed, source };
-    apifyMessage.textContent = `Importing ${source}...`;
+    const parsed = JSON.parse(raw);
+    const payload = Array.isArray(parsed) ? { rows: parsed } : parsed;
+    apifyMessage.textContent = "Importing...";
     const result = await api(`/api/card-items/${cardId}/import-apify-comps`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -2560,7 +2525,7 @@ document.addEventListener("click", async (event) => {
       await loadReviewCard(id);
       openReviewOverlay();
     }
-    if (action === "manual-cardhedge-reprice") {
+    if (action === "manual-comp-reprice") {
       const listingId = button.dataset.listingId || "";
       const sku = button.dataset.sku || "";
       const offerId = button.dataset.offerId || "";

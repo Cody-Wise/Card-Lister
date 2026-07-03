@@ -1,8 +1,51 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { calculatePrice } from "../src/services/pricing.js";
 import { parseApifySoldListings, searchApifySoldListings } from "../src/services/apify.js";
 import { searchEbayListings } from "../src/services/ebay-browse.js";
+
+// Several tests below call searchApifySoldListings() with a real (mocked)
+// SOLDCOMPS_API_KEY set, which would otherwise increment the real local
+// monthly usage counter at data/soldcomps-usage.json. Point it at an
+// isolated per-file temp path instead — Node's test runner runs separate
+// *.test.js files concurrently by default, so sharing the real file with
+// other suites (e.g. soldcomps-budget.test.js) would race.
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.env.SOLDCOMPS_USAGE_FILE = path.join(rootDir, "tmp", "test-soldcomps-usage-apify.json");
+
+test("searchApifySoldListings calls SoldComps at the documented endpoint with a Bearer auth header", async (t) => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "sc_test_key_123";
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    if (originalKey === undefined) {
+      delete process.env.SOLDCOMPS_API_KEY;
+    } else {
+      process.env.SOLDCOMPS_API_KEY = originalKey;
+    }
+  });
+
+  let requestedUrl = null;
+  let requestedInit = null;
+  global.fetch = async (url, init) => {
+    requestedUrl = url;
+    requestedInit = init;
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+
+  await searchApifySoldListings({ playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" });
+
+  const parsed = new URL(requestedUrl);
+  assert.equal(`${parsed.protocol}//${parsed.host}`, "https://api.sold-comps.com");
+  assert.equal(parsed.pathname, "/v1/scrape");
+  assert.ok(parsed.searchParams.get("keyword"));
+  assert.equal(requestedInit.method, "GET");
+  assert.equal(requestedInit.headers.Authorization, "Bearer sc_test_key_123");
+});
 
 test("parses apify sold listings and filters noisy lots", () => {
   const result = parseApifySoldListings(
@@ -92,23 +135,22 @@ test("keeps only base comps when base hint is set", () => {
 
 test("searches base cards without pulling a parallel lane", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.APIFY_TOKEN;
-  process.env.APIFY_TOKEN = "test-token";
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.APIFY_TOKEN;
+      delete process.env.SOLDCOMPS_API_KEY;
     } else {
-      process.env.APIFY_TOKEN = originalToken;
+      process.env.SOLDCOMPS_API_KEY = originalToken;
     }
   });
 
   let callCount = 0;
   global.fetch = async (_url, options) => {
     callCount += 1;
-    const body = JSON.parse(options.body);
-    const keyword = Array.isArray(body.keywords) ? body.keywords[0] : "";
+    const keyword = new URL(_url).searchParams.get("keyword") || "";
     const rows = [
       {
         keyword,
@@ -139,7 +181,7 @@ test("searches base cards without pulling a parallel lane", async (t) => {
     return {
       ok: true,
       status: 200,
-      json: async () => rows,
+      json: async () => ({ items: rows }),
     };
   };
 
@@ -160,15 +202,15 @@ test("searches base cards without pulling a parallel lane", async (t) => {
 
 test("searches parallel-aware apify comps and prices Islam around four dollars", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.APIFY_TOKEN;
-  process.env.APIFY_TOKEN = "test-token";
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.APIFY_TOKEN;
+      delete process.env.SOLDCOMPS_API_KEY;
     } else {
-      process.env.APIFY_TOKEN = originalToken;
+      process.env.SOLDCOMPS_API_KEY = originalToken;
     }
   });
 
@@ -176,8 +218,7 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
   let firstKeyword = null;
   global.fetch = async (_url, options) => {
     callCount += 1;
-    const body = JSON.parse(options.body);
-    const keyword = Array.isArray(body.keywords) ? body.keywords[0] : "";
+    const keyword = new URL(_url).searchParams.get("keyword") || "";
     if (!firstKeyword) firstKeyword = keyword;
     const rows =
       callCount === 1
@@ -237,7 +278,7 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
     return {
       ok: true,
       status: 200,
-      json: async () => rows,
+      json: async () => ({ items: rows }),
     };
   };
 
@@ -272,15 +313,15 @@ test("searches parallel-aware apify comps and prices Islam around four dollars",
 
 test("searches autographed serial-numbered cards with autograph hints and denominator serials", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.APIFY_TOKEN;
-  process.env.APIFY_TOKEN = "test-token";
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.APIFY_TOKEN;
+      delete process.env.SOLDCOMPS_API_KEY;
     } else {
-      process.env.APIFY_TOKEN = originalToken;
+      process.env.SOLDCOMPS_API_KEY = originalToken;
     }
   });
 
@@ -288,26 +329,27 @@ test("searches autographed serial-numbered cards with autograph hints and denomi
   let firstKeyword = null;
   global.fetch = async (_url, options) => {
     callCount += 1;
-    const body = JSON.parse(options.body);
-    const keyword = Array.isArray(body.keywords) ? body.keywords[0] : "";
+    const keyword = new URL(_url).searchParams.get("keyword") || "";
     if (!firstKeyword) firstKeyword = keyword;
     return {
       ok: true,
       status: 200,
-      json: async () => [
-        {
-          keyword,
-          itemId: "auto_1",
-          title: "2024 Panini Contenders Football Aurélien Tchouaméni Autograph 002/049",
-          condition: "Pre-Owned",
-          soldPrice: "12.49",
-          shippingPrice: "0.00",
-          totalPrice: "12.49",
-          endedAt: "2026-06-07T00:00:00.000Z",
-          url: "https://www.ebay.com/itm/auto_1?nordt=true",
-          listingType: "buy_it_now",
-        },
-      ],
+      json: async () => ({
+        items: [
+          {
+            keyword,
+            itemId: "auto_1",
+            title: "2024 Panini Contenders Football Aurélien Tchouaméni Autograph 002/049",
+            condition: "Pre-Owned",
+            soldPrice: "12.49",
+            shippingPrice: "0.00",
+            totalPrice: "12.49",
+            endedAt: "2026-06-07T00:00:00.000Z",
+            url: "https://www.ebay.com/itm/auto_1?nordt=true",
+            listingType: "buy_it_now",
+          },
+        ],
+      }),
     };
   };
 
@@ -400,28 +442,27 @@ test("searches autographed serial-numbered browse listings with autograph hints 
 
 test("searches generic rookie cards as rookie rc instead of rated rookie", async (t) => {
   const originalFetch = global.fetch;
-  const originalToken = process.env.APIFY_TOKEN;
-  process.env.APIFY_TOKEN = "test-token";
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
 
   t.after(() => {
     global.fetch = originalFetch;
     if (originalToken === undefined) {
-      delete process.env.APIFY_TOKEN;
+      delete process.env.SOLDCOMPS_API_KEY;
     } else {
-      process.env.APIFY_TOKEN = originalToken;
+      process.env.SOLDCOMPS_API_KEY = originalToken;
     }
   });
 
   let callCount = 0;
   global.fetch = async (_url, options) => {
     callCount += 1;
-    const body = JSON.parse(options.body);
-    const keyword = Array.isArray(body.keywords) ? body.keywords[0] : "";
+    const keyword = new URL(_url).searchParams.get("keyword") || "";
     return {
       ok: true,
       status: 200,
-      json: async () =>
-        keyword.includes("Rookie RC")
+      json: async () => ({
+        items: keyword.includes("Rookie RC")
           ? [
               {
                 keyword,
@@ -449,6 +490,7 @@ test("searches generic rookie cards as rookie rc instead of rated rookie", async
               },
             ]
           : [],
+      }),
     };
   };
 

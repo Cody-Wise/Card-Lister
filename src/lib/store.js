@@ -109,7 +109,7 @@ function stateFreshnessMs(state = {}) {
   ];
   for (const items of arrays) {
     for (const item of Array.isArray(items) ? items : []) {
-      for (const key of ["updatedAt", "createdAt", "externalCompUpdatedAt", "cardhedgeLookupAttemptedAt"]) {
+      for (const key of ["updatedAt", "createdAt", "externalCompUpdatedAt", "externalCompLookupAttemptedAt"]) {
         const time = Date.parse(String(item?.[key] || ""));
         if (Number.isFinite(time) && time > newest) newest = time;
       }

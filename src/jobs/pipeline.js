@@ -711,7 +711,7 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
       cardItem.apifySearchQuery = Array.isArray(apifyResult.keywordsUsed)
         ? apifyResult.keywordsUsed.join(" · ")
         : null;
-      cardItem.externalCompSource = "apify";
+      cardItem.externalCompSource = apifyResult.source || "soldcomps";
       cardItem.externalCompUpdatedAt = nowIso();
       delete cardItem.apifyError;
     } catch (error) {
@@ -804,7 +804,7 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   const hasAnyComps = Boolean(soldComps.length || activeFiltered.length);
   const compSource =
     hasApifyConfig() && !cardItem.apifyError
-      ? "apify"
+      ? "soldcomps"
       : hasAnyComps
         ? "ebay_image_search"
         : cardItem.externalCompSource || null;
@@ -832,7 +832,7 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
     cardItem.recommendedPrice > 0;
   cardItem.externalCompSource = compSource;
   cardItem.externalCompUpdatedAt = hasAnyComps ? nowIso() : cardItem.externalCompUpdatedAt || null;
-  cardItem.cardhedgePricingSummary = buildExternalPricingSummary(
+  cardItem.externalPricingSummary = buildExternalPricingSummary(
     pricing,
     soldComps,
     activeFiltered,

@@ -17,8 +17,8 @@
 import { getLiveCardComps } from "../services/comps.js";
 import { updateEbayListingPrice } from "../services/ebay.js";
 import {
-  buildCardSightLookupMetadata,
-  buildOfferCardSightLookupMetadata,
+  buildExternalCompLookupMetadata,
+  buildOfferExternalCompLookupMetadata,
   buildEbayPricingSummary,
   buildManualRepricingSignal,
   pickImageUrl,
@@ -79,8 +79,8 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     card?.backImageUrl || "",
   );
   const lookupMetadata = card
-    ? buildCardSightLookupMetadata(card, offer?.ebayTitle || "", imageUrl)
-    : buildOfferCardSightLookupMetadata(offer, card?.ebayTitle || "", imageUrl);
+    ? buildExternalCompLookupMetadata(card, offer?.ebayTitle || "", imageUrl)
+    : buildOfferExternalCompLookupMetadata(offer, card?.ebayTitle || "", imageUrl);
 
   const lookupResult = await withTimeout(
     getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
@@ -94,18 +94,18 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
   if (offer) {
     if (imageUrl && !offer.imageUrl) offer.imageUrl = imageUrl;
     rememberOfferEbayTitle(offer, lookupMetadata.titleHint);
-    offer.cardhedgeLookupAttemptedAt = nowIso();
+    offer.externalCompLookupAttemptedAt = nowIso();
     offer.externalCompSource = "ebay_image_search";
-    offer.cardhedgePricingSummary = pricingSummary;
+    offer.externalPricingSummary = pricingSummary;
     offer.externalCompUpdatedAt = nowIso();
     offer.updatedAt = nowIso();
     delete offer.apifyError;
   }
   if (card) {
-    card.cardhedgeLookupAttemptedAt = nowIso();
+    card.externalCompLookupAttemptedAt = nowIso();
     card.externalSoldComps = Array.isArray(lookupResult.sold) ? lookupResult.sold.slice(0, 50) : [];
     card.externalCompSource = "ebay_image_search";
-    card.cardhedgePricingSummary = pricingSummary;
+    card.externalPricingSummary = pricingSummary;
     card.externalCompUpdatedAt = nowIso();
     card.updatedAt = nowIso();
     delete card.apifyError;

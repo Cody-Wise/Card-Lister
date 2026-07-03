@@ -29,8 +29,7 @@ This project is a Node.js web app for ingesting card images, extracting metadata
 | Authentication | Signed session cookie + Google OAuth |
 | Drive import | Google Drive API |
 | Marketplace | eBay Sell APIs + eBay Browse APIs |
-| Sold comp ingestion | Apify eBay sold listings actor |
-| Alternate market provider | CardSight/CardHedge-compatible provider code still exists in places |
+| Sold comp ingestion | SoldComps (`api.sold-comps.com`) for per-card sold comps; Apify eBay sold listings actor for the market-heat feature only |
 | OCR / vision | Surya OCR, macOS Vision OCR, optional OpenAI vision |
 
 ## High-level architecture
@@ -45,7 +44,7 @@ This project is a Node.js web app for ingesting card images, extracting metadata
 | [src/services/ocr.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ocr.js) | OCR / vision extraction |
 | [src/services/matching.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/matching.js) | Card identity matching |
 | [src/services/pricing.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/pricing.js) | Pricing math |
-| [src/services/apify.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/apify.js) | Sold comp parsing, market heat, CardSight/CardHedge adapter logic, Apify sold-listing fetches |
+| [src/services/apify.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/apify.js) | Sold comp parsing, market heat, SoldComps sold-listing fetches (module/function names still carry the historical "Apify" branding — see the naming note at the top of the file) |
 | [src/services/comps.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/comps.js) | Combines active comps and sold comps into a runtime market view |
 | [src/services/ebay.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ebay.js) | eBay auth, inventory, offers, publish flow, listing monitoring, sales ingestion |
 | [src/services/ebay-browse.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ebay-browse.js) | eBay Browse active and sold listing search |
@@ -136,8 +135,7 @@ The Market Heat area builds leaderboards and player-level insights from sold mar
 It uses:
 
 1. Apify sold listing samples.
-2. Optional CardSight/CardHedge paths where configured.
-3. Player insight endpoint for recent activity or comps.
+2. Player insight endpoint (comps only — see `/api/ebay/market-heat/player-insight`).
 
 ## Current card processing pipeline
 
@@ -166,16 +164,12 @@ Primary source:
 
 Primary current source:
 
-1. Apify eBay sold listings actor
-
-Secondary or legacy paths still in code:
-
-1. CardSight
-2. CardHedge naming
+1. SoldComps (`api.sold-comps.com`, direct eBay sold-listings API — see `SOLDCOMPS_*` env vars and the naming note at the top of [src/services/apify.js](src/services/apify.js)). Throws a clear quota error (no fallback provider) once SoldComps' local monthly request budget (`SOLDCOMPS_MONTHLY_REQUEST_LIMIT`, currently 2000 to match the live plan — the app tracks its own count in `data/soldcomps-usage.json` and stops calling SoldComps before hitting its real 403) is reached.
+2. Apify eBay sold listings actor — market-heat feature only now; no longer used for per-card sold comps.
 
 Important note:
 
-The codebase still contains legacy CardHedge/CardSight naming in route names, cache table names, and some branches even though Apify is now the preferred sold comp path for several workflows. Another engineer should expect some cleanup work here.
+CardHedge and the never-fully-deployed "CardSight" rename have been fully removed (the account was dropped in favor of a SoldComps plan upgrade). Some internal function/variable names in [src/services/apify.js](src/services/apify.js) still carry the historical "Apify" branding from before the SoldComps swap — see the naming note at the top of that file.
 
 ## Trading card support status
 
@@ -328,7 +322,7 @@ Main tables:
 
 Note:
 
-`cardhedge_cache` still holds general market/cache payloads even though the project has shifted away from CardHedge branding in some flows.
+`cardhedge_cache` is a generic keyed cache table (used by the market-heat feature) that predates the CardHedge removal. Renaming/dropping it is a live production schema change and hasn't been done yet — it's cosmetic only (the code just queries it by that literal table name via [src/lib/supabase.js](src/lib/supabase.js)) and can be revisited separately.
 
 ## Environment variables
 
@@ -418,33 +412,24 @@ The app loads a root-level `.env` automatically through [src/lib/load-env.js](/U
 | `MARKET_HEAT_DEFAULT_LIMIT` | Default leaderboard size |
 | `MARKET_HEAT_REFRESH_MS` | Market heat cache TTL |
 
-### CardSight / CardHedge compatibility
+### SoldComps (per-card sold comps)
+
+CardHedge and the never-fully-deployed "CardSight" rename have been fully removed — SoldComps is now the sole per-card sold-comp provider, with no fallback.
 
 | Variable | Purpose |
 | --- | --- |
-| `CARDSIGHT_API_KEY` | CardSight key |
-| `CARDHEDGE_API_KEY` | Legacy alias / alternate provider key |
-| `CARDSIGHT_API_BASE_URL` | CardSight base URL |
-| `CARDHEDGE_API_BASE_URL` | Legacy base URL |
-| `COMP_DATA_PROVIDER` | Force comp provider |
-| `SOLD_COMP_PROVIDER` | Alternate provider selector |
-| `CARDSIGHT_COMPS_COUNT` | CardSight comp count |
-| `CARDHEDGE_COMPS_COUNT` | Legacy comp count |
-| `CARDSIGHT_USE_APIFY_FALLBACK` | Allow Apify fallback |
-| `CARDHEDGE_USE_APIFY_FALLBACK` | Legacy fallback flag |
-| `CARDSIGHT_MIN_INTERVAL_MS` | Provider rate limit pause |
-| `CARDHEDGE_MIN_INTERVAL_MS` | Legacy rate limit pause |
-| `CARDSIGHT_MAX_RETRIES` | Retry count |
-| `CARDHEDGE_MAX_RETRIES` | Legacy retry count |
-| `CARDSIGHT_LOOKUP_CACHE_MS` | Cache duration |
-| `CARDHEDGE_LOOKUP_CACHE_MS` | Legacy cache duration |
-| `CARDSIGHT_MATCH_CACHE_VERSION` | Cache version |
-| `CARDSIGHT_PRICING_PERIOD` | Pricing period selector |
-| `CARDHEDGE_HEAT_PAGES` | Market heat page count |
-| `CARDHEDGE_REPRICE_LOOKUP_TIMEOUT_MS` | Reprice lookup timeout |
-| `CARDHEDGE_REPRICE_QUEUE_PAUSE_MS` | Reprice queue pause |
-| `CARDHEDGE_REPRICE_SCHEDULES_PER_LOAD` | Reprice schedules per load |
-| `CARDHEDGE_MANUAL_REPRICE_TIMEOUT_MS` | Manual reprice timeout |
+| `SOLDCOMPS_API_KEY` | SoldComps API key |
+| `SOLDCOMPS_DAYS_TO_SCRAPE` | Sold listing lookback (falls back to `APIFY_EBAY_SOLD_DAYS_TO_SCRAPE`) |
+| `SOLDCOMPS_COUNT` | Sold comp count target (falls back to `APIFY_EBAY_SOLD_COUNT`) |
+| `SOLDCOMPS_EBAY_SITE` | eBay site (falls back to `APIFY_EBAY_SITE`) |
+| `SOLDCOMPS_SORT_ORDER` | Sort order (falls back to `APIFY_EBAY_SORT_ORDER`) |
+| `SOLDCOMPS_ITEM_LOCATION` | Item location filter (falls back to `APIFY_EBAY_ITEM_LOCATION`) |
+| `SOLDCOMPS_CATEGORY_ID` | eBay category ID, default `0` |
+| `SOLDCOMPS_MONTHLY_REQUEST_LIMIT` | Local monthly request cap, currently 2000 to match the live plan |
+| `SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS` | Background reprice hydration lookup timeout |
+| `SOLDCOMPS_REPRICE_QUEUE_PAUSE_MS` | Background reprice queue pause between jobs |
+| `SOLDCOMPS_REPRICE_SCHEDULES_PER_LOAD` | Max offer hydrations scheduled per `/api/ebay/listings` load |
+| `SOLDCOMPS_MANUAL_REPRICE_TIMEOUT_MS` | Manual reprice route lookup timeout |
 
 ### OCR / vision
 
@@ -565,9 +550,9 @@ What it does:
 ## Important implementation notes for the next coder
 
 1. The server is a plain Node HTTP app, not Express, Next.js, or Fastify.
-2. Most product logic is concentrated in one very large file: [src/app.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/app.js) (~4,200 lines as of this writing, down from ~4,543). A `src/routes/` directory now holds two extractions, each verified behaviorally identical (auth gating, response shapes) before and after: [src/routes/drive-routes.js](src/routes/drive-routes.js) (`/api/drive/*` folder-scan/import) and [src/routes/ebay-oauth-routes.js](src/routes/ebay-oauth-routes.js) (`/api/ebay/auth-url`, `/api/ebay/auth-callback`, `/api/ebay/refresh-token`, `/api/ebay/reset-auth`, `/api/ebay/config`, `/api/ebay/setup`, `/api/ebay/auto-configure` — note `/api/ebay/generate-description` and the card-item ebay-preview/ebay-save routes stayed in app.js since they touch `withState`/cardItems rather than pure OAuth/config). Remaining natural split points: auth/session (`/auth/*`, `/login.html` etc. — more tangled with the core dispatch/auth-gating logic than the two done so far, so higher risk), eBay sales/market-heat (`/api/ebay/sales`, `/api/ebay/market-heat*`), eBay listings (`/api/ebay/listings*`), and batches/card-items (`/api/batches`, `/api/card-items`). Keep moving one group at a time, with a test run and a live smoke test after each. Some helpers (like `buildApifyLookupKey`, `buildCardSightLookupMetadata`) are imported by `src/jobs/sales-sync.js` and `src/jobs/reprice-scheduler.js` and need to land somewhere both app.js and those jobs can still import from.
+2. Most product logic is concentrated in one very large file: [src/app.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/app.js) (~4,200 lines as of this writing, down from ~4,543). A `src/routes/` directory now holds two extractions, each verified behaviorally identical (auth gating, response shapes) before and after: [src/routes/drive-routes.js](src/routes/drive-routes.js) (`/api/drive/*` folder-scan/import) and [src/routes/ebay-oauth-routes.js](src/routes/ebay-oauth-routes.js) (`/api/ebay/auth-url`, `/api/ebay/auth-callback`, `/api/ebay/refresh-token`, `/api/ebay/reset-auth`, `/api/ebay/config`, `/api/ebay/setup`, `/api/ebay/auto-configure` — note `/api/ebay/generate-description` and the card-item ebay-preview/ebay-save routes stayed in app.js since they touch `withState`/cardItems rather than pure OAuth/config). Remaining natural split points: auth/session (`/auth/*`, `/login.html` etc. — more tangled with the core dispatch/auth-gating logic than the two done so far, so higher risk), eBay sales/market-heat (`/api/ebay/sales`, `/api/ebay/market-heat*`), eBay listings (`/api/ebay/listings*`), and batches/card-items (`/api/batches`, `/api/card-items`). Keep moving one group at a time, with a test run and a live smoke test after each. Some helpers (like `buildApifyLookupKey`, `buildExternalCompLookupMetadata`) are imported by `src/jobs/sales-sync.js` and `src/jobs/reprice-scheduler.js` and need to land somewhere both app.js and those jobs can still import from.
 3. State and persistence are reliable enough to use, but the architecture is still transitional between local JSON and Supabase.
-4. Provider naming is inconsistent in places because the code evolved from CardHedge to CardSight to Apify-backed flows.
+4. Provider naming is inconsistent in places because the code evolved from CardHedge to CardSight to Apify to SoldComps-backed flows (CardHedge/CardSight are now fully removed, but some identifiers still carry the historical "Apify" branding).
 5. Trading-card support exists but is still layered on top of a sports-card-first schema.
 6. There are duplicate files in the repo with ` 2` in the filename such as `Dockerfile 2`, `schema 2.sql`, `auth 2.js`, and `drive 2.js`. These appear to be stale copies or alternates and should be treated carefully before deletion.
 7. Browser/UI behavior depends on app state and authentication, so debugging often requires checking both the route handler and `data/state.json` or Supabase snapshot state.
@@ -575,7 +560,7 @@ What it does:
 ## Known rough edges
 
 1. `src/app.js` is too large and owns too many responsibilities.
-2. Comp/pricing code still carries naming from all three provider generations (CardHedge, the never-fully-deployed CardSight rename, and now Apify — see the naming note at the top of [src/services/apify.js](src/services/apify.js)). CARDHEDGE_* env vars are the live production config; CARDSIGHT_* is read as an alias everywhere but is unset in production today, so it's dead code, not a second active provider.
+2. Comp/pricing code still carries function/variable naming from earlier provider generations (CardHedge, the never-fully-deployed CardSight rename, and Apify) even though CardHedge/CardSight have been fully removed and SoldComps is the sole per-card sold-comp provider today — see the naming note at the top of [src/services/apify.js](src/services/apify.js).
 3. OCR and parallel detection are still the most brittle parts of the workflow.
 4. ~~There is no strong integration-test coverage for live eBay and Google flows.~~ Partial improvement: [tests/ebay-oauth.test.js](tests/ebay-oauth.test.js) covers the eBay OAuth code-exchange and refresh-token flows end-to-end against a mocked `fetch` boundary (real request shape, real success/error response handling). Google Drive's OAuth/API calls go through the `googleapis` client rather than a mockable `fetch()`, so testing that flow the same way would need an HTTP-mocking dependency (e.g. `nock`) that isn't currently installed — [tests/drive-match-pairs.test.js](tests/drive-match-pairs.test.js) covers the pure front/back image-pairing logic that flow depends on instead. Listing creation/publish and order-sync flows are still untested.
 5. ~~The persistence model should eventually be simplified so there is a clearer primary store.~~ Decided: local JSON is the live source of truth, Supabase is a durability mirror. See "Source of truth and storage behavior" above.

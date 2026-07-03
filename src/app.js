@@ -40,9 +40,10 @@ import { calculatePrice } from "./services/pricing.js";
 import {
   parseApifySoldListings,
   searchApifySoldListings,
-  loadRecentCardHedgeSales as loadRecentCardSightSales,
   getApifyMarketHeatReport,
   buildApifyLookupKey,
+  getSoldCompsUsageStatus,
+  hasApifyConfig,
 } from "./services/apify.js";
 import { renameFile, getFileInfo, listFolder, createFolder, moveFile } from "./services/drive.js";
 import { handleDriveApiRoutes } from "./routes/drive-routes.js";
@@ -682,17 +683,17 @@ function dedupeStoredComps(comps = []) {
   return deduped;
 }
 
-function deriveStoredCardSightPricingSummary(card = {}, storedComps = []) {
-  const allCardSightComps = dedupeStoredComps(
+function deriveStoredExternalPricingSummary(card = {}, storedComps = []) {
+  const allComps = dedupeStoredComps(
     [
       ...(Array.isArray(card.externalSoldComps) ? card.externalSoldComps : []),
       ...storedComps,
-    ].filter((comp) => String(comp?.source || "").toLowerCase().startsWith("cardhedge")),
+    ],
   );
-  if (!allCardSightComps.length) return null;
+  if (!allComps.length) return null;
 
   const pricing = calculatePrice({
-    soldComps: allCardSightComps,
+    soldComps: allComps,
     activeListings: [],
     strategy: card.pricingStrategy || "sold_comps_p25",
     metadata: pricingMetadataForCard(card),
@@ -715,18 +716,17 @@ function deriveStoredCardSightPricingSummary(card = {}, storedComps = []) {
     compPrice,
     low,
     high,
-    countUsed: Number.isFinite(pricing.usedSoldCompCount) ? pricing.usedSoldCompCount : allCardSightComps.length,
-    countRequested: allCardSightComps.length,
+    countUsed: Number.isFinite(pricing.usedSoldCompCount) ? pricing.usedSoldCompCount : allComps.length,
+    countRequested: allComps.length,
     timeWeighted: null,
     derivedFromStoredComps: true,
   };
 }
 
-function buildCardSightCompsByCardId(state = {}) {
+function buildExternalCompsByCardId(state = {}) {
   const compsByCardId = new Map();
   for (const comp of state.comps || []) {
     if (!comp?.cardItemId) continue;
-    if (!String(comp?.source || "").toLowerCase().startsWith("cardhedge")) continue;
     const bucket = compsByCardId.get(comp.cardItemId) || [];
     bucket.push(comp);
     compsByCardId.set(comp.cardItemId, bucket);
@@ -734,23 +734,24 @@ function buildCardSightCompsByCardId(state = {}) {
   return compsByCardId;
 }
 
-function ensureCardSightPricingSummary(card, compsByCardId = new Map()) {
+function ensureExternalPricingSummary(card, compsByCardId = new Map()) {
   if (!card) return card;
-  const existingCompPrice = normalizeSalesCurrencyValue(card?.cardhedgePricingSummary?.compPrice);
+  const existingCompPrice = normalizeSalesCurrencyValue(card?.externalPricingSummary?.compPrice);
   if (Number.isFinite(existingCompPrice) && existingCompPrice > 0) return card;
 
-  const hasCardSightSource =
-    String(card?.externalCompSource || "").toLowerCase() === "cardhedge" ||
-    (Array.isArray(card?.externalSoldComps) &&
-      card.externalSoldComps.some((comp) => String(comp?.source || "").toLowerCase().startsWith("cardhedge")));
-  if (!hasCardSightSource) return card;
+  const storedComps = compsByCardId.get(card.id) || [];
+  const hasExternalSource =
+    Boolean(card?.externalCompSource) ||
+    (Array.isArray(card?.externalSoldComps) && card.externalSoldComps.length > 0) ||
+    storedComps.length > 0;
+  if (!hasExternalSource) return card;
 
-  const summary = deriveStoredCardSightPricingSummary(card, compsByCardId.get(card.id) || []);
+  const summary = deriveStoredExternalPricingSummary(card, storedComps);
   if (!summary) return card;
 
-  card.cardhedgePricingSummary = summary;
+  card.externalPricingSummary = summary;
   if (!card.externalCompSource) {
-    card.externalCompSource = "cardhedge";
+    card.externalCompSource = "soldcomps";
   }
   return card;
 }
@@ -889,7 +890,7 @@ function ensureTrackedOfferForListing(state, { offerBySku, offerByListingId }, l
   return offer;
 }
 
-function hasMeaningfulCardSightSummary(summary) {
+function hasMeaningfulExternalPricingSummary(summary) {
   const compPrice = normalizeSalesCurrencyValue(summary?.compPrice);
   return Number.isFinite(compPrice) && compPrice > 0;
 }
@@ -937,9 +938,9 @@ export function buildEbayPricingSummary(record = {}, soldComps = [], activeListi
 // classifies it aligned/overpriced/underpriced. Shared by the manual reprice
 // route and the scheduled repricing job.
 export function buildManualRepricingSignal(card, offer, price) {
-  const pricingSummary = offer?.cardhedgePricingSummary || card?.cardhedgePricingSummary || null;
+  const pricingSummary = offer?.externalPricingSummary || card?.externalPricingSummary || null;
   const recommendedPrice = normalizeSalesCurrencyValue(card?.recommendedPrice);
-  const source = pricingSummary?.source || (pricingSummary ? "cardhedge" : "recommended");
+  const source = pricingSummary?.source || (pricingSummary ? "soldcomps" : "recommended");
   const rawTarget = pricingSummary?.compPrice ?? recommendedPrice;
   const targetPrice = normalizeSalesCurrencyValue(rawTarget);
   let low = normalizeSalesCurrencyValue(pricingSummary?.low);
@@ -1053,7 +1054,7 @@ export async function withTimeout(promise, timeoutMs, label = "Operation") {
   }
 }
 
-export function buildCardSightLookupMetadata(card = {}, titleHint = "", imageUrl = "") {
+export function buildExternalCompLookupMetadata(card = {}, titleHint = "", imageUrl = "") {
   return {
     playerName: card?.candidatePlayer || "",
     year: card?.candidateYear || null,
@@ -1081,7 +1082,7 @@ export function buildCardSightLookupMetadata(card = {}, titleHint = "", imageUrl
   };
 }
 
-export function buildOfferCardSightLookupMetadata(offer = {}, titleHint = "", imageUrl = "") {
+export function buildOfferExternalCompLookupMetadata(offer = {}, titleHint = "", imageUrl = "") {
   const stableTitle = String(titleHint || offer?.ebayTitle || offer?.title || "").trim();
   return {
     playerName: "",
@@ -1115,7 +1116,7 @@ function hasFreshLookupKey(record, metadata = {}) {
   return String(record?.apifyLookupKey || "") === buildApifyLookupKey(metadata);
 }
 
-async function hydrateCardSightPricingSummary(
+async function hydrateExternalPricingSummary(
   card,
   {
     compsByCardId = new Map(),
@@ -1126,14 +1127,14 @@ async function hydrateCardSightPricingSummary(
   } = {},
 ) {
   if (!card) return card;
-  ensureCardSightPricingSummary(card, compsByCardId);
-  const metadata = buildCardSightLookupMetadata(card, titleHint, imageUrl);
+  ensureExternalPricingSummary(card, compsByCardId);
+  const metadata = buildExternalCompLookupMetadata(card, titleHint, imageUrl);
   const lookupKeyMatches = hasFreshLookupKey(card, metadata);
-  const existingCompPrice = normalizeSalesCurrencyValue(card?.cardhedgePricingSummary?.compPrice);
+  const existingCompPrice = normalizeSalesCurrencyValue(card?.externalPricingSummary?.compPrice);
   if (lookupKeyMatches && Number.isFinite(existingCompPrice) && existingCompPrice > 0) return card;
-  if (!(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY)) return card;
+  if (!hasApifyConfig()) return card;
 
-  const attemptedAt = Date.parse(String(card?.cardhedgeLookupAttemptedAt || ""));
+  const attemptedAt = Date.parse(String(card?.externalCompLookupAttemptedAt || ""));
   if (lookupKeyMatches && Number.isFinite(attemptedAt) && Date.now() - attemptedAt < 15 * 60 * 1000) {
     return card;
   }
@@ -1152,31 +1153,31 @@ async function hydrateCardSightPricingSummary(
     try {
       const lookupTimeoutMs = Math.max(
         1000,
-        Math.min(15000, toPositiveInt(process.env.CARDHEDGE_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
+        Math.min(15000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
       );
       const result = await withTimeout(
         searchApifySoldListings(metadata),
         lookupTimeoutMs,
-        "CardSight repricing lookup",
+        "Sold-comp repricing lookup",
       );
       const detectedSource = String(result?.source || "").toLowerCase();
-      card.cardhedgeLookupAttemptedAt = nowIso();
+      card.externalCompLookupAttemptedAt = nowIso();
       card.apifyLookupKey = buildApifyLookupKey(metadata);
-      if (!detectedSource.startsWith("cardhedge")) return;
-
       const imported = Array.isArray(result?.comps) ? result.comps.slice(0, 50) : [];
+      if (!imported.length) return;
+
       card.externalSoldComps = imported;
-      card.externalCompSource = "cardhedge";
-      card.cardhedgeMatch = result?.cardMatch || null;
-      card.cardhedgeMatchWarning = result?.cardMatchWarning || null;
-      card.cardhedgePricingSummary =
-        result?.pricingSummary || deriveStoredCardSightPricingSummary(card, compsByCardId.get(card.id) || []) || null;
+      card.externalCompSource = detectedSource || "soldcomps";
+      card.externalCompMatch = result?.cardMatch || null;
+      card.externalCompMatchWarning = result?.cardMatchWarning || null;
+      card.externalPricingSummary =
+        result?.pricingSummary || deriveStoredExternalPricingSummary(card, compsByCardId.get(card.id) || []) || null;
       card.externalCompUpdatedAt = nowIso();
       card.apifySearchKeywords = Array.isArray(result?.keywordsUsed) ? result.keywordsUsed : [];
       card.apifySearchQuery = card.apifySearchKeywords.length ? card.apifySearchKeywords.join(" · ") : null;
       delete card.apifyError;
     } catch (error) {
-      card.cardhedgeLookupAttemptedAt = nowIso();
+      card.externalCompLookupAttemptedAt = nowIso();
       card.apifyError = error?.message || String(error);
     }
   })();
@@ -1186,39 +1187,39 @@ async function hydrateCardSightPricingSummary(
   return card;
 }
 
-const cardHedgeRepriceQueue = [];
-const cardHedgeRepriceQueuedIds = new Set();
-let cardHedgeRepriceWorkerPromise = null;
-const offerCardSightQueue = [];
-const offerCardSightQueuedKeys = new Set();
-let offerCardSightWorkerPromise = null;
+const externalRepriceQueue = [];
+const externalRepriceQueuedIds = new Set();
+let externalRepriceWorkerPromise = null;
+const offerExternalRepriceQueue = [];
+const offerExternalRepriceQueuedKeys = new Set();
+let offerExternalRepriceWorkerPromise = null;
 
-function getCardSightQueueStatus() {
+function getExternalRepriceQueueStatus() {
   return {
-    cardQueueLength: cardHedgeRepriceQueue.length,
-    cardQueueActive: Boolean(cardHedgeRepriceWorkerPromise),
-    offerQueueLength: offerCardSightQueue.length,
-    offerQueueActive: Boolean(offerCardSightWorkerPromise),
+    cardQueueLength: externalRepriceQueue.length,
+    cardQueueActive: Boolean(externalRepriceWorkerPromise),
+    offerQueueLength: offerExternalRepriceQueue.length,
+    offerQueueActive: Boolean(offerExternalRepriceWorkerPromise),
   };
 }
 
-async function drainCardSightRepriceQueue() {
-  if (cardHedgeRepriceWorkerPromise) return cardHedgeRepriceWorkerPromise;
+async function drainExternalRepriceQueue() {
+  if (externalRepriceWorkerPromise) return externalRepriceWorkerPromise;
   const pauseMs = Math.max(
     0,
-    Math.min(60000, toPositiveInt(process.env.CARDHEDGE_REPRICE_QUEUE_PAUSE_MS, 6500)),
+    Math.min(60000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_QUEUE_PAUSE_MS, 6500)),
   );
-  cardHedgeRepriceWorkerPromise = (async () => {
-    while (cardHedgeRepriceQueue.length) {
-      const job = cardHedgeRepriceQueue.shift();
+  externalRepriceWorkerPromise = (async () => {
+    while (externalRepriceQueue.length) {
+      const job = externalRepriceQueue.shift();
       if (!job?.cardId) continue;
       try {
         const snapshot = await getState();
         const snapshotCard = (snapshot.cardItems || []).find((entry) => entry.id === job.cardId);
         if (!snapshotCard) continue;
 
-        const compsByCardId = buildCardSightCompsByCardId(snapshot);
-        await hydrateCardSightPricingSummary(snapshotCard, {
+        const compsByCardId = buildExternalCompsByCardId(snapshot);
+        await hydrateExternalPricingSummary(snapshotCard, {
           compsByCardId,
           lookupCache: new Map(),
           lookupBudget: { remaining: 1 },
@@ -1235,30 +1236,30 @@ async function drainCardSightRepriceQueue() {
       } catch {
         // background hydration is best-effort
       } finally {
-        cardHedgeRepriceQueuedIds.delete(job.cardId);
+        externalRepriceQueuedIds.delete(job.cardId);
       }
-      if (pauseMs && cardHedgeRepriceQueue.length) {
+      if (pauseMs && externalRepriceQueue.length) {
         await new Promise((resolve) => setTimeout(resolve, pauseMs));
       }
     }
   })().finally(() => {
-    cardHedgeRepriceWorkerPromise = null;
-    if (cardHedgeRepriceQueue.length) {
+    externalRepriceWorkerPromise = null;
+    if (externalRepriceQueue.length) {
       setTimeout(() => {
-        void drainCardSightRepriceQueue();
+        void drainExternalRepriceQueue();
       }, 0);
     }
   });
-  return cardHedgeRepriceWorkerPromise;
+  return externalRepriceWorkerPromise;
 }
 
-function scheduleCardSightRepriceHydration(cardId, titleHint = "", imageUrl = "") {
-  if (!(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY) || !cardId) return;
-  if (cardHedgeRepriceQueuedIds.has(cardId)) return;
-  cardHedgeRepriceQueuedIds.add(cardId);
-  cardHedgeRepriceQueue.push({ cardId, titleHint, imageUrl });
+function scheduleExternalRepriceHydration(cardId, titleHint = "", imageUrl = "") {
+  if (!hasApifyConfig() || !cardId) return;
+  if (externalRepriceQueuedIds.has(cardId)) return;
+  externalRepriceQueuedIds.add(cardId);
+  externalRepriceQueue.push({ cardId, titleHint, imageUrl });
   setTimeout(() => {
-    void drainCardSightRepriceQueue();
+    void drainExternalRepriceQueue();
   }, 0);
 }
 
@@ -1268,15 +1269,15 @@ function offerHydrationKey({ listingId, sku } = {}) {
   return null;
 }
 
-async function drainOfferCardSightQueue() {
-  if (offerCardSightWorkerPromise) return offerCardSightWorkerPromise;
+async function drainOfferExternalRepriceQueue() {
+  if (offerExternalRepriceWorkerPromise) return offerExternalRepriceWorkerPromise;
   const pauseMs = Math.max(
     0,
-    Math.min(60000, toPositiveInt(process.env.CARDHEDGE_REPRICE_QUEUE_PAUSE_MS, 6500)),
+    Math.min(60000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_QUEUE_PAUSE_MS, 6500)),
   );
-  offerCardSightWorkerPromise = (async () => {
-    while (offerCardSightQueue.length) {
-      const job = offerCardSightQueue.shift();
+  offerExternalRepriceWorkerPromise = (async () => {
+    while (offerExternalRepriceQueue.length) {
+      const job = offerExternalRepriceQueue.shift();
       const jobKey = offerHydrationKey(job);
       if (!jobKey) continue;
       try {
@@ -1286,30 +1287,31 @@ async function drainOfferCardSightQueue() {
           (job.sku && String(entry?.sku || "") === String(job.sku)),
         );
         if (!snapshotOffer) continue;
-        const metadata = buildOfferCardSightLookupMetadata(snapshotOffer, job.titleHint || "", job.imageUrl || "");
+        const metadata = buildOfferExternalCompLookupMetadata(snapshotOffer, job.titleHint || "", job.imageUrl || "");
         const lookupKeyMatches = hasFreshLookupKey(snapshotOffer, metadata);
-        if (lookupKeyMatches && hasMeaningfulCardSightSummary(snapshotOffer.cardhedgePricingSummary)) continue;
-        const attemptedAt = Date.parse(String(snapshotOffer?.cardhedgeLookupAttemptedAt || ""));
+        if (lookupKeyMatches && hasMeaningfulExternalPricingSummary(snapshotOffer.externalPricingSummary)) continue;
+        const attemptedAt = Date.parse(String(snapshotOffer?.externalCompLookupAttemptedAt || ""));
         if (lookupKeyMatches && Number.isFinite(attemptedAt) && Date.now() - attemptedAt < 15 * 60 * 1000) continue;
 
         const lookupTimeoutMs = Math.max(
           1000,
-          Math.min(15000, toPositiveInt(process.env.CARDHEDGE_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
+          Math.min(15000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
         );
         const result = await withTimeout(
           searchApifySoldListings(metadata),
           lookupTimeoutMs,
-          "CardSight offer repricing lookup",
+          "Sold-comp offer repricing lookup",
         );
-        snapshotOffer.cardhedgeLookupAttemptedAt = nowIso();
+        snapshotOffer.externalCompLookupAttemptedAt = nowIso();
         const detectedSource = String(result?.source || "").toLowerCase();
-        if (!detectedSource.startsWith("cardhedge")) continue;
+        const imported = Array.isArray(result?.comps) ? result.comps.slice(0, 50) : [];
+        if (!imported.length) continue;
 
         rememberOfferEbayTitle(snapshotOffer, metadata.titleHint);
-        snapshotOffer.externalCompSource = "cardhedge";
-        snapshotOffer.cardhedgeMatch = result?.cardMatch || null;
-        snapshotOffer.cardhedgeMatchWarning = result?.cardMatchWarning || null;
-        snapshotOffer.cardhedgePricingSummary = result?.pricingSummary || null;
+        snapshotOffer.externalCompSource = detectedSource || "soldcomps";
+        snapshotOffer.externalCompMatch = result?.cardMatch || null;
+        snapshotOffer.externalCompMatchWarning = result?.cardMatchWarning || null;
+        snapshotOffer.externalPricingSummary = result?.pricingSummary || null;
         snapshotOffer.apifyLookupKey = buildApifyLookupKey(metadata);
         snapshotOffer.externalCompUpdatedAt = nowIso();
         snapshotOffer.apifySearchKeywords = Array.isArray(result?.keywordsUsed) ? result.keywordsUsed : [];
@@ -1328,31 +1330,31 @@ async function drainOfferCardSightQueue() {
       } catch {
         // background hydration is best-effort
       } finally {
-        offerCardSightQueuedKeys.delete(jobKey);
+        offerExternalRepriceQueuedKeys.delete(jobKey);
       }
-      if (pauseMs && offerCardSightQueue.length) {
+      if (pauseMs && offerExternalRepriceQueue.length) {
         await new Promise((resolve) => setTimeout(resolve, pauseMs));
       }
     }
   })().finally(() => {
-    offerCardSightWorkerPromise = null;
-    if (offerCardSightQueue.length) {
+    offerExternalRepriceWorkerPromise = null;
+    if (offerExternalRepriceQueue.length) {
       setTimeout(() => {
-        void drainOfferCardSightQueue();
+        void drainOfferExternalRepriceQueue();
       }, 0);
     }
   });
-  return offerCardSightWorkerPromise;
+  return offerExternalRepriceWorkerPromise;
 }
 
-function scheduleOfferCardSightHydration({ listingId, sku, titleHint = "", imageUrl = "" } = {}) {
-  if (!(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY)) return;
+function scheduleOfferExternalRepriceHydration({ listingId, sku, titleHint = "", imageUrl = "" } = {}) {
+  if (!hasApifyConfig()) return;
   const key = offerHydrationKey({ listingId, sku });
-  if (!key || offerCardSightQueuedKeys.has(key)) return;
-  offerCardSightQueuedKeys.add(key);
-  offerCardSightQueue.push({ listingId, sku, titleHint, imageUrl });
+  if (!key || offerExternalRepriceQueuedKeys.has(key)) return;
+  offerExternalRepriceQueuedKeys.add(key);
+  offerExternalRepriceQueue.push({ listingId, sku, titleHint, imageUrl });
   setTimeout(() => {
-    void drainOfferCardSightQueue();
+    void drainOfferExternalRepriceQueue();
   }, 0);
 }
 
@@ -1802,7 +1804,7 @@ function clearCardProcessingCaches(card) {
   card.externalSoldComps = [];
   card.externalCompSource = null;
   card.externalCompUpdatedAt = null;
-  card.cardhedgePricingSummary = null;
+  card.externalPricingSummary = null;
   card.compMatchProvider = null;
   card.apifyLookupKey = null;
   card.apifySearchKeywords = [];
@@ -1907,6 +1909,7 @@ export async function handler(req, res) {
   }
 
   if (req.method === "GET" && pathname === "/api/health") {
+    const soldCompsUsage = await getSoldCompsUsageStatus();
     return sendJson(res, 200, {
       ok: true,
       service: "automatic-sports-card-listing",
@@ -1917,12 +1920,14 @@ export async function handler(req, res) {
       apify: {
         hasApifyConfig: Boolean(process.env.APIFY_TOKEN),
         actorId: process.env.APIFY_EBAY_SOLD_ACTOR_ID || "caffein.dev~ebay-sold-listings",
+        note: "market-heat feature only; sold-comp lookups use soldcomps below",
       },
-      cardhedge: {
-        hasCardSightConfig: Boolean(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY),
-        baseUrl: process.env.CARDSIGHT_API_BASE_URL || process.env.CARDHEDGE_API_BASE_URL || "https://api.cardsight.ai",
+      soldcomps: {
+        hasSoldCompsConfig: Boolean(process.env.SOLDCOMPS_API_KEY),
+        baseUrl: "https://api.sold-comps.com",
+        usage: soldCompsUsage,
       },
-      marketDataProvider: (process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY) ? "cardsight" : "apify",
+      marketDataProvider: process.env.SOLDCOMPS_API_KEY ? "soldcomps" : "none",
       openai: {
         hasVisionConfig: Boolean(process.env.OPENAI_API_KEY),
         model: process.env.OPENAI_VISION_MODEL || "gpt-4.1",
@@ -2108,7 +2113,6 @@ export async function handler(req, res) {
         const cardImagesByCardId = new Map();
         const offerBySku = new Map();
         const offerByListingId = new Map();
-        const compsByCardId = new Map();
 
         for (const offer of state.offers || []) {
           if (offer?.sku) {
@@ -2146,13 +2150,6 @@ export async function handler(req, res) {
           if (image.side === "back" && !bucket.back) bucket.back = image.url;
           if (!bucket.all.includes(image.url)) bucket.all.push(image.url);
           cardImagesByCardId.set(image.cardItemId, bucket);
-        }
-        for (const comp of state.comps || []) {
-          if (!comp?.cardItemId) continue;
-          if (!String(comp?.source || "").toLowerCase().startsWith("cardhedge")) continue;
-          const bucket = compsByCardId.get(comp.cardItemId) || [];
-          bucket.push(comp);
-          compsByCardId.set(comp.cardItemId, bucket);
         }
 
         const monthAgg = new Map();
@@ -2454,16 +2451,10 @@ export async function handler(req, res) {
 
   if (req.method === "GET" && pathname === "/api/ebay/market-heat/player-insight") {
     try {
-      if (!(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY)) {
-        throw new Error("CardSight API key is required for player insight.");
-      }
-      const mode = String(url.searchParams.get("mode") || "recent").trim().toLowerCase();
+      const mode = "comps";
       const playerName = String(url.searchParams.get("player") || "").trim();
       const sport = String(url.searchParams.get("sport") || "").trim();
-      const count = toPositiveInt(
-        url.searchParams.get("count"),
-        mode === "comps" ? 20 : 8,
-      );
+      const count = toPositiveInt(url.searchParams.get("count"), 20);
       if (!playerName) {
         throw new Error("Player name is required.");
       }
@@ -2474,29 +2465,17 @@ export async function handler(req, res) {
         compMatchMode: "auto",
       };
 
-      if (mode === "comps") {
-        const result = await searchApifySoldListings(metadata);
-        const comps = Array.isArray(result?.comps)
-          ? result.comps.slice(0, Math.min(Math.max(count, 1), 50))
-          : [];
-        return sendJson(res, 200, {
-          ...result,
-          mode,
-          playerName,
-          sport,
-          comps,
-          loadedCount: comps.length,
-        });
-      }
-
-      const result = await loadRecentCardSightSales(metadata, {
-        count: Math.min(Math.max(count, 1), 20),
-      });
+      const result = await searchApifySoldListings(metadata);
+      const comps = Array.isArray(result?.comps)
+        ? result.comps.slice(0, Math.min(Math.max(count, 1), 50))
+        : [];
       return sendJson(res, 200, {
         ...result,
-        mode: "recent",
+        mode,
         playerName,
         sport,
+        comps,
+        loadedCount: comps.length,
       });
     } catch (error) {
       return sendJson(res, 400, { error: error.message });
@@ -2581,10 +2560,10 @@ export async function handler(req, res) {
       const offerBySku = new Map();
       const offerByListingId = new Map();
       const cardByTitle = new Map();
-      const compsByCardId = buildCardSightCompsByCardId(state);
+      const compsByCardId = buildExternalCompsByCardId(state);
       const perLoadOfferHydrationLimit = Math.max(
         0,
-        Math.min(50, toPositiveInt(process.env.CARDHEDGE_REPRICE_SCHEDULES_PER_LOAD, 12)),
+        Math.min(50, toPositiveInt(process.env.SOLDCOMPS_REPRICE_SCHEDULES_PER_LOAD, 12)),
       );
       let scheduledOfferHydrations = 0;
       const touchedOfferIds = new Set();
@@ -2682,9 +2661,9 @@ export async function handler(req, res) {
       }
 
       const buildRepricingSignal = (card, offer, currentPrice) => {
-        const pricingSummary = offer?.cardhedgePricingSummary || card?.cardhedgePricingSummary || null;
+        const pricingSummary = offer?.externalPricingSummary || card?.externalPricingSummary || null;
         const recommendedPrice = normalizeSalesCurrencyValue(card?.recommendedPrice);
-        const source = pricingSummary?.source || (pricingSummary ? "cardhedge" : "recommended");
+        const source = pricingSummary?.source || (pricingSummary ? "soldcomps" : "recommended");
         const rawTarget = pricingSummary?.compPrice ?? recommendedPrice;
         const targetPrice = normalizeSalesCurrencyValue(rawTarget);
         let low = normalizeSalesCurrencyValue(pricingSummary?.low);
@@ -2792,12 +2771,12 @@ export async function handler(req, res) {
         );
         rememberCardEbayTitle(resolvedCard, stableListingTitle);
         rememberOfferEbayTitle(resolvedOffer, stableListingTitle);
-        ensureCardSightPricingSummary(resolvedCard, compsByCardId);
+        ensureExternalPricingSummary(resolvedCard, compsByCardId);
         const offerLookupMetadata = resolvedOffer
-          ? buildOfferCardSightLookupMetadata(resolvedOffer, stableListingTitle, listingImageUrl)
+          ? buildOfferExternalCompLookupMetadata(resolvedOffer, stableListingTitle, listingImageUrl)
           : null;
         const cardLookupMetadata = resolvedCard
-          ? buildCardSightLookupMetadata(
+          ? buildExternalCompLookupMetadata(
             resolvedCard,
             stableListingTitle || resolvedCard?.ebayTitle || "",
             listingImageUrl,
@@ -2925,8 +2904,8 @@ export async function handler(req, res) {
         analyticsError,
         analyticsWindowDays: salesDays,
         ageFilter,
-        cardHedgeQueue: {
-          ...getCardSightQueueStatus(),
+        externalRepriceQueue: {
+          ...getExternalRepriceQueueStatus(),
           scheduledThisLoad: scheduledOfferHydrations,
           perLoadLimit: perLoadOfferHydrationLimit,
         },
@@ -2998,8 +2977,8 @@ export async function handler(req, res) {
 
   if (req.method === "POST" && pathname === "/api/ebay/listings/reprice") {
     const body = await readJson(req);
-    if (!(process.env.CARDSIGHT_API_KEY || process.env.CARDHEDGE_API_KEY)) {
-      return sendJson(res, 400, { error: "CARDHEDGE_API_KEY is not configured." });
+    if (!hasApifyConfig()) {
+      return sendJson(res, 400, { error: "SOLDCOMPS_API_KEY is not configured." });
     }
 
     const listingId = String(body.listingId || "").trim();
@@ -3036,8 +3015,8 @@ export async function handler(req, res) {
       Math.min(
         45000,
         toPositiveInt(
-          process.env.CARDHEDGE_MANUAL_REPRICE_TIMEOUT_MS,
-          toPositiveInt(process.env.CARDHEDGE_REPRICE_LOOKUP_TIMEOUT_MS, 30000),
+          process.env.SOLDCOMPS_MANUAL_REPRICE_TIMEOUT_MS,
+          toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 30000),
         ),
       ),
     );
@@ -3054,12 +3033,12 @@ export async function handler(req, res) {
       matchingCard?.backImageUrl || "",
     );
     const eBayLookupMetadata = matchingCard
-      ? buildCardSightLookupMetadata(
+      ? buildExternalCompLookupMetadata(
           matchingCard,
           titleHint || matchingOffer?.ebayTitle || "",
           imageUrl,
         )
-      : buildOfferCardSightLookupMetadata(
+      : buildOfferExternalCompLookupMetadata(
           matchingOffer,
           titleHint || matchingCard?.ebayTitle || "",
           imageUrl,
@@ -3093,24 +3072,24 @@ export async function handler(req, res) {
       if (imageUrl && !matchingOffer.imageUrl) {
         matchingOffer.imageUrl = imageUrl;
       }
-      matchingOffer.cardhedgeLookupAttemptedAt = nowIso();
+      matchingOffer.externalCompLookupAttemptedAt = nowIso();
       rememberOfferEbayTitle(matchingOffer, eBayLookupMetadata.titleHint);
       matchingOffer.externalCompSource = "ebay_image_search";
-      matchingOffer.cardhedgeMatch = cardMatch;
-      matchingOffer.cardhedgeMatchWarning = cardMatchWarning;
-      matchingOffer.cardhedgePricingSummary = eBaySummary;
+      matchingOffer.externalCompMatch = cardMatch;
+      matchingOffer.externalCompMatchWarning = cardMatchWarning;
+      matchingOffer.externalPricingSummary = eBaySummary;
       matchingOffer.externalCompUpdatedAt = nowIso();
       matchingOffer.updatedAt = nowIso();
       delete matchingOffer.apifyError;
     }
 
     if (matchingCard) {
-      matchingCard.cardhedgeLookupAttemptedAt = nowIso();
+      matchingCard.externalCompLookupAttemptedAt = nowIso();
       matchingCard.externalSoldComps = Array.isArray(lookupResult.sold) ? lookupResult.sold.slice(0, 50) : [];
       matchingCard.externalCompSource = "ebay_image_search";
-      matchingCard.cardhedgeMatch = cardMatch;
-      matchingCard.cardhedgeMatchWarning = cardMatchWarning;
-      matchingCard.cardhedgePricingSummary = eBaySummary;
+      matchingCard.externalCompMatch = cardMatch;
+      matchingCard.externalCompMatchWarning = cardMatchWarning;
+      matchingCard.externalPricingSummary = eBaySummary;
       matchingCard.externalCompUpdatedAt = nowIso();
       matchingCard.updatedAt = nowIso();
       delete matchingCard.apifyError;
@@ -3304,30 +3283,6 @@ export async function handler(req, res) {
 
   if (req.method === "GET" && pathname.startsWith("/api/card-items/")) {
     const id = pathname.split("/")[3];
-    if (pathname.endsWith("/cardhedge-recent-sales")) {
-      return withStateReadOnly(async (state) => {
-        const card = state.cardItems.find((item) => item.id === id);
-        if (!card) return notFound(res, "Card item not found");
-        const meta = {
-          playerName: card?.candidatePlayer || "",
-          year: card?.candidateYear || null,
-          setName: card?.candidateSetName || "",
-          cardNumber: card?.candidateCardNumber || "",
-          parallel: card?.candidateParallel || "",
-          grade: card?.candidateGrade || "",
-          gradedFlag: card?.candidateCondition === "graded",
-          compGradeOverride: card?.compGradeOverride || null,
-          compMatchMode: card?.compMatchMode || "auto",
-          rookieFlag: Boolean(card?.candidateRookieFlag),
-          variantLabel: card?.candidateVariantLabel || "",
-          serialNumber: card?.serialNumber || null,
-          printRun: card?.printRun || null,
-          sport: card?.candidateSport || "",
-        };
-        const result = await loadRecentCardSightSales(meta, { count: 8 });
-        return sendJson(res, 200, result);
-      });
-    }
     return withStateReadOnly(async (state) => {
       const card = state.cardItems.find((item) => item.id === id);
       if (!card) return notFound(res, "Card item not found");
@@ -3647,23 +3602,15 @@ export async function handler(req, res) {
   ) {
     const id = pathname.split("/")[3];
     const body = await readJson(req);
-    const requestedSource = String(body?.source || "apify").toLowerCase();
     const incomingRows =
       body?.rows ?? body?.listings ?? body?.results ?? body?.items ?? body?.records ?? null;
-    const sourceRows = Array.isArray(incomingRows)
-      ? incomingRows
-      : body;
-    if (requestedSource !== "cardhedge" && !Array.isArray(incomingRows)) {
+    const sourceRows = Array.isArray(incomingRows) ? incomingRows : body;
+    if (!Array.isArray(incomingRows)) {
       return sendJson(res, 400, { error: "No card rows provided to import." });
     }
-    if (requestedSource === "cardhedge" && !process.env.CARDHEDGE_API_KEY) {
-      return sendJson(res, 400, {
-        error: "CardSight source requested, but CARDSIGHT_API_KEY is missing from .env.",
-      });
-    }
-      const result = await withState(async (state) => {
-        const card = state.cardItems.find((item) => item.id === id);
-        if (!card) return notFound(res, "Card item not found");
+    const result = await withState(async (state) => {
+      const card = state.cardItems.find((item) => item.id === id);
+      if (!card) return notFound(res, "Card item not found");
 
       const meta = {
         playerName: card?.candidatePlayer || "",
@@ -3683,45 +3630,27 @@ export async function handler(req, res) {
         titleHint: card?.ebayTitle || "",
       };
 
-        const importedResult = await (async () => {
-          if (requestedSource === "cardhedge") {
-            return searchApifySoldListings(meta);
-          }
-          return parseApifySoldListings(sourceRows, meta);
-        })();
+      const importedResult = parseApifySoldListings(sourceRows, meta);
 
       const isTradingCardComp =
         /\b(trading cards|pokemon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/i.test(
           String(meta?.sport || meta?.setName || meta?.titleHint || ""),
         );
-      const requestedLimit = requestedSource === "cardhedge"
-        ? Number(process.env.CARDHEDGE_COMPS_COUNT || 50)
-        : Math.max(
-            Number(process.env.APIFY_EBAY_SOLD_COUNT || 10),
-            isTradingCardComp ? 15 : 10,
-          );
+      const requestedLimit = Math.max(
+        Number(process.env.SOLDCOMPS_COUNT || process.env.APIFY_EBAY_SOLD_COUNT || 10),
+        isTradingCardComp ? 15 : 10,
+      );
       const importLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.round(requestedLimit), 100)
-        : requestedSource === "cardhedge"
-          ? 50
-          : isTradingCardComp
-            ? 15
-            : 10;
+        : isTradingCardComp
+          ? 15
+          : 10;
       const imported = importedResult.comps.slice(0, importLimit);
       card.externalSoldComps = imported;
-      const importedSource = String(importedResult.source || "").toLowerCase();
-      card.externalCompSource = requestedSource === "cardhedge" || importedSource.startsWith("cardhedge")
-        ? "cardhedge"
-        : "apify";
-      card.cardhedgeMatch = card.externalCompSource === "cardhedge"
-        ? importedResult.cardMatch || null
-        : null;
-      card.cardhedgeMatchWarning = card.externalCompSource === "cardhedge"
-        ? importedResult.cardMatchWarning || null
-        : null;
-      card.cardhedgePricingSummary = card.externalCompSource === "cardhedge"
-        ? importedResult.pricingSummary || null
-        : null;
+      card.externalCompSource = "soldcomps";
+      card.externalCompMatch = null;
+      card.externalCompMatchWarning = null;
+      card.externalPricingSummary = null;
       card.externalCompUpdatedAt = nowIso();
       card.apifyLookupKey = buildApifyLookupKey(meta);
       card.apifySearchKeywords = Array.isArray(importedResult.keywordsUsed)
