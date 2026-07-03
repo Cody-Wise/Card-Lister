@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { promises as fsp } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { calculatePrice } from "../src/services/pricing.js";
 import { parseApifySoldListings, searchApifySoldListings } from "../src/services/apify.js";
@@ -12,8 +13,20 @@ import { searchEbayListings } from "../src/services/ebay-browse.js";
 // isolated per-file temp path instead — Node's test runner runs separate
 // *.test.js files concurrently by default, so sharing the real file with
 // other suites (e.g. soldcomps-budget.test.js) would race.
+//
+// That isolated file still persists ACROSS separate `node --test` runs
+// (it's a real file on disk, not reset by the test runner), so running this
+// suite repeatedly in one calendar month eventually pushes the counter past
+// the default 90-request budget and starts failing every test that expects
+// a successful call. Reset it to 0 up front so each run starts clean.
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-process.env.SOLDCOMPS_USAGE_FILE = path.join(rootDir, "tmp", "test-soldcomps-usage-apify.json");
+const soldCompsUsageFile = path.join(rootDir, "tmp", "test-soldcomps-usage-apify.json");
+process.env.SOLDCOMPS_USAGE_FILE = soldCompsUsageFile;
+await fsp.mkdir(path.dirname(soldCompsUsageFile), { recursive: true });
+await fsp.writeFile(
+  soldCompsUsageFile,
+  JSON.stringify({ month: new Date().toISOString().slice(0, 7), count: 0 }),
+);
 
 test("searchApifySoldListings calls SoldComps at the documented endpoint with a Bearer auth header", async (t) => {
   const originalFetch = global.fetch;

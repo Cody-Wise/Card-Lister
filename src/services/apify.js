@@ -491,7 +491,7 @@ function isTradingCardMetadata(metadata = {}) {
 
 function resolveApifySoldCount(metadata = {}) {
   const configuredCount = clampPositiveInt(
-    Number(process.env.SOLDCOMPS_COUNT || process.env.APIFY_EBAY_SOLD_COUNT || 10),
+    Number(process.env.SOLDCOMPS_COUNT || process.env.APIFY_EBAY_SOLD_COUNT || 50),
     10,
     100,
   );
