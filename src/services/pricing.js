@@ -430,6 +430,35 @@ export function calculatePrice({
   } else if (soldPrices.length > 0 && serializedTarget) {
     reason = "Using available sold comps for serialized card pricing.";
     recommended = soldAnchor ?? soldMedian ?? soldP25;
+  } else if (soldPrices.length > 0) {
+    // 1-2 sold comps — too few for the "high confidence" branch above, but
+    // real evidence nonetheless. Previously any card with fewer than 3 sold
+    // comps fell straight to the active-listings branch below and threw
+    // this away entirely, even when it was an exact parallel match — a
+    // single confirmed-parallel sold comp is a far stronger signal than an
+    // active-listing pool that couldn't match the parallel at all and fell
+    // back to every other parallel/price for that player+set (see
+    // "parallel_not_found_all" below), which can badly skew a median.
+    const isExactParallelSold = parallelMode.mode === "exact_parallel";
+    const activeParallelMatched =
+      parallelActiveMode.mode === "exact_parallel" || parallelActiveMode.mode === "similar_parallel";
+    const hasReliableActiveSignal = activeMedian != null && activeParallelMatched;
+
+    if (isExactParallelSold && hasReliableActiveSignal && soldAnchor != null) {
+      const activeWeightPct = 0.15;
+      const soldWeightPct = 1 - activeWeightPct;
+      recommended = soldAnchor * soldWeightPct + activeMedian * activeWeightPct;
+      soldWeight = soldWeightPct;
+      activeWeight = activeWeightPct;
+      blendApplied = true;
+      reason = `Thin sold comps (${soldPrices.length}) but an exact parallel match; blending ${Math.round(soldWeightPct * 100)}% sold and ${Math.round(activeWeightPct * 100)}% active median.`;
+    } else {
+      recommended = soldAnchor ?? soldMedian ?? soldP25;
+      reason = isExactParallelSold
+        ? `Using ${soldPrices.length} exact-parallel sold comp(s) — active listings didn't match this parallel closely enough to blend in.`
+        : "Using available sold comps (thin sample, no confirmed parallel match).";
+    }
+    confidence = "low";
   } else if (activeFloor != null) {
     reason =
       activePrices.length >= 3

@@ -142,6 +142,51 @@ test("uses the stronger sold/total signal when both are provided", () => {
   assert.equal(result.recommendedPrice, 34);
 });
 
+test("trusts a single exact-parallel sold comp over an unfiltered active-listing fallback", () => {
+  // Mirrors a real production case: only one sold comp exists for this
+  // specific parallel (~$11), and no active listing matched the parallel
+  // either, so the active pool falls back to every other Wembanyama
+  // parallel/set — including much pricier ones. Before the fix, having
+  // fewer than 3 sold comps discarded that single exact match entirely and
+  // used the noisy active median ($32+) instead.
+  const result = calculatePrice({
+    metadata: { parallel: "Green Ray Wave" },
+    soldComps: [
+      { title: "2024-25 Panini Donruss Optic #45 Green Ray Wave Prizm Victor Wembanyama - SP", totalPrice: 10.84 },
+    ],
+    activeListings: [
+      { title: "2024-25 Panini Donruss Optic Victor Wembanyama #45 Green Seismic Prizm", totalPrice: 25 },
+      { title: "2024-25 Donruss Optic Victor Wembanyama #45 Green Hyper /249 San Antonio Spurs", totalPrice: 50 },
+      { title: "Panini 2024-25 Donruss Optic Victor Wembanyama Spurs Holo Prizm #45", totalPrice: 200 },
+      { title: "Victor Wembanyama 2024-25 Panini Donruss Optic SILVER SP Spurs", totalPrice: 20 },
+    ],
+  });
+
+  assert.equal(result.evidence.soldParallelFilterMode, "exact_parallel");
+  assert.equal(result.evidence.activeParallelFilterMode, "parallel_not_found_all");
+  assert.equal(result.recommendedPrice, 10.84);
+  assert.ok(result.recommendedPrice < 30);
+  assert.equal(result.confidence, "low");
+  assert.ok(result.reason.includes("exact-parallel sold comp"));
+});
+
+test("lightly blends a single exact-parallel sold comp with active listings that also matched the parallel", () => {
+  const result = calculatePrice({
+    metadata: { parallel: "Green Ray Wave" },
+    soldComps: [{ title: "Victor Wembanyama Green Ray Wave Prizm", totalPrice: 10 }],
+    activeListings: [
+      { title: "Victor Wembanyama Green Ray Wave Prizm", totalPrice: 20 },
+      { title: "Victor Wembanyama Green Ray Wave Prizm", totalPrice: 22 },
+    ],
+  });
+
+  assert.equal(result.evidence.soldParallelFilterMode, "exact_parallel");
+  assert.equal(result.evidence.activeParallelFilterMode, "exact_parallel");
+  assert.ok(result.recommendedPrice > 10);
+  assert.ok(result.recommendedPrice < 15);
+  assert.ok(result.reason.includes("Thin sold comps"));
+});
+
 test("uses sparse serial sold comps before active floor", () => {
   const result = calculatePrice({
     metadata: {
