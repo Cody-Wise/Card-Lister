@@ -383,6 +383,10 @@ function getApifyConfig() {
 
 const SOLD_COMPS_BASE_URL = "https://api.sold-comps.com";
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // SoldComps (api.sold-comps.com) — direct eBay-sold-listings API, the sole
 // provider for per-card sold-comp search (CardHedge was fully removed after
 // upgrading the SoldComps plan). Falls back to the corresponding
@@ -1063,25 +1067,46 @@ export async function searchApifySoldListings(metadata = {}) {
       categoryId: config.categoryId,
     });
 
-    const response = await fetch(`${SOLD_COMPS_BASE_URL}/v1/scrape?${params.toString()}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        Accept: "application/json",
-      },
-    });
+    // SoldComps is a live scrape, not a stable index — the exact same
+    // keyword genuinely returns 0 items on a real fraction of calls (a
+    // production card was observed alternating between 0 and 9 items across
+    // otherwise-identical back-to-back requests), which used to surface as
+    // "comps not coming through" whenever a Save & Reprocess happened to hit
+    // one of the empty draws. Retry a couple of times, but only when the
+    // scrape itself came back empty — a non-empty scrape that our own
+    // relevance filtering later rejects is a real "no match", not flakiness,
+    // and shouldn't be retried.
+    let items = [];
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // The budget was only confirmed once, up front, before the very first
+      // request of the whole call. Re-check it before each retry too — a
+      // retry is still a real billed request, and without this a single
+      // searchApifySoldListings() call could burn straight through the
+      // configured monthly cap in one shot instead of stopping at it.
+      if (attempt > 1 && !(await hasSoldCompsBudget())) break;
+      const response = await fetch(`${SOLD_COMPS_BASE_URL}/v1/scrape?${params.toString()}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          Accept: "application/json",
+        },
+      });
 
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message =
-        payload?.error?.message || payload?.message || payload?.error || `HTTP ${response.status}`;
-      throw new Error(`SoldComps sold listings request failed (${response.status}): ${message}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message =
+          payload?.error?.message || payload?.message || payload?.error || `HTTP ${response.status}`;
+        throw new Error(`SoldComps sold listings request failed (${response.status}): ${message}`);
+      }
+      // Count this against the monthly budget only once we know the request
+      // itself succeeded.
+      await recordSoldCompsRequest();
+
+      items = Array.isArray(payload?.items) ? payload.items : [];
+      if (items.length || attempt === maxAttempts) break;
+      await sleep(500);
     }
-    // Count this against the monthly budget only once we know the request
-    // itself succeeded.
-    await recordSoldCompsRequest();
-
-    const items = Array.isArray(payload?.items) ? payload.items : [];
     const queryParallel = keyword.includes("Blue Refractor")
       ? "Blue Refractor"
       : keyword.includes("Holo")

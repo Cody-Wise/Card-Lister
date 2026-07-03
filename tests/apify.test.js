@@ -60,6 +60,97 @@ test("searchApifySoldListings calls SoldComps at the documented endpoint with a 
   assert.equal(requestedInit.headers.Authorization, "Bearer sc_test_key_123");
 });
 
+test("retries a keyword that scrapes back empty before giving up, and stops as soon as one succeeds", async (t) => {
+  // SoldComps is a live scrape, not a stable index — the same keyword can
+  // legitimately return 0 items on one call and real results moments later
+  // (observed directly against production: 0, 0, 0, 9, 0, 9 across six
+  // back-to-back identical requests). Without a retry, a Save & Reprocess
+  // that happened to land on an empty draw looked like "comps aren't coming
+  // through" even though comps genuinely existed.
+  const originalFetch = global.fetch;
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    if (originalToken === undefined) {
+      delete process.env.SOLDCOMPS_API_KEY;
+    } else {
+      process.env.SOLDCOMPS_API_KEY = originalToken;
+    }
+  });
+
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+    if (callCount < 3) {
+      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        items: [
+          {
+            itemId: "retry_success_1",
+            title: "2019 Panini Score Kyler Murray #384 Rookie RC",
+            condition: "Pre-Owned",
+            soldPrice: "9.99",
+            shippingPrice: "0.00",
+            totalPrice: "9.99",
+            endedAt: "2026-06-07T00:00:00.000Z",
+            url: "https://www.ebay.com/itm/retry_success_1",
+            listingType: "buy_it_now",
+          },
+        ],
+      }),
+    };
+  };
+
+  const result = await searchApifySoldListings({
+    playerName: "Kyler Murray",
+    year: 2019,
+    setName: "Score",
+    cardNumber: "384",
+    rookieFlag: true,
+  });
+
+  assert.equal(callCount, 3);
+  assert.equal(result.comps.length, 1);
+  assert.ok(result.comps[0].title.includes("Kyler Murray"));
+});
+
+test("gives up after exhausting retries when a keyword keeps scraping back empty", async (t) => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.SOLDCOMPS_API_KEY;
+  process.env.SOLDCOMPS_API_KEY = "test-key";
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    if (originalToken === undefined) {
+      delete process.env.SOLDCOMPS_API_KEY;
+    } else {
+      process.env.SOLDCOMPS_API_KEY = originalToken;
+    }
+  });
+
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+
+  const result = await searchApifySoldListings({
+    playerName: "Nobody Special",
+    year: 2019,
+    setName: "Score",
+    cardNumber: "999",
+  });
+
+  assert.equal(callCount, 3);
+  assert.equal(result.comps.length, 0);
+});
+
 test("parses apify sold listings and filters noisy lots", () => {
   const result = parseApifySoldListings(
     [

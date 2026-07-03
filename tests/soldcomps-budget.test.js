@@ -56,7 +56,29 @@ test("getSoldCompsUsageStatus reports zero usage against the configured limit", 
 
 test("a successful SoldComps request increments the monthly usage counter", async () => {
   await withEnv({ SOLDCOMPS_API_KEY: "sc_test", SOLDCOMPS_MONTHLY_REQUEST_LIMIT: "5" }, async () => {
-    const restore = mockFetch(async () => ({ ok: true, status: 200, json: async () => ({ items: [] }) }));
+    // Return a real (non-empty) item so this test isolates the "one
+    // successful request, one counted" case. An always-empty mock instead
+    // exercises the empty-scrape retry path (see apify.test.js), which
+    // intentionally spends more than one request against the budget.
+    const restore = mockFetch(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        items: [
+          {
+            itemId: "budget_test_1",
+            title: "2024 Test Set Test Player #1",
+            condition: "Pre-Owned",
+            soldPrice: "9.99",
+            shippingPrice: "0.00",
+            totalPrice: "9.99",
+            endedAt: "2026-06-07T00:00:00.000Z",
+            url: "https://www.ebay.com/itm/budget_test_1",
+            listingType: "buy_it_now",
+          },
+        ],
+      }),
+    }));
     try {
       await searchApifySoldListings({ playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" });
       const status = await getSoldCompsUsageStatus();
