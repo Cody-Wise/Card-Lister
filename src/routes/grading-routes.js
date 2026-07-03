@@ -28,7 +28,24 @@ const GRADING_POLL_TIMEOUT_MS = Math.max(
   Number.parseInt(process.env.XIMILAR_GRADING_POLL_TIMEOUT_MS || "120000", 10) || 120000,
 );
 
+// Disabled 2026-07-04 pending a different AI grading provider — Ximilar's
+// card-grader results weren't reliable enough to keep surfacing. Code stays
+// in place (not deleted) so swapping providers later doesn't mean rebuilding
+// this whole tab/flow from scratch. Flip GRADING_FEATURE_ENABLED=true to
+// turn it back on; see also the two send-to-grading/return-from-grading
+// routes in src/app.js and the /api/bootstrap gradingFeatureEnabled flag
+// that hides the tab/button client-side.
+function isGradingFeatureEnabled() {
+  const value = process.env.GRADING_FEATURE_ENABLED;
+  return value === "true" || value === "1" || value === "on";
+}
+
 export async function handleGradingApiRoutes(req, res, { pathname }) {
+  if (!isGradingFeatureEnabled()) {
+    sendJson(res, 404, { error: "The grading feature is currently disabled." });
+    return true;
+  }
+
   if (req.method === "POST" && pathname === "/api/grading/import") {
     const body = await readJson(req);
     const pairs = body.pairs;

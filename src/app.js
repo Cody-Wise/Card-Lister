@@ -392,6 +392,17 @@ function parseBoolean(value) {
   return value === true || value === "true" || value === "1" || value === 1 || value === "on";
 }
 
+// Disabled 2026-07-04 pending a different AI grading provider — Ximilar's
+// card-grader results weren't reliable enough to keep surfacing. Code stays
+// in place (not deleted) so swapping providers later doesn't mean rebuilding
+// this whole tab/flow from scratch. Flip GRADING_FEATURE_ENABLED=true to
+// turn it back on. Gates the /api/grading/* routes (src/routes/grading-routes.js)
+// and /send-to-grading below; /return-from-grading is deliberately NOT
+// gated so a card already sent to grading before the disable isn't stranded.
+function isGradingFeatureEnabled() {
+  return parseBoolean(process.env.GRADING_FEATURE_ENABLED);
+}
+
 export function toPositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -2127,6 +2138,7 @@ export async function handler(req, res) {
           cleanCard(card, state.offers.filter((offer) => offer.cardItemId === card.id))),
         offers: state.offers.map((o) => ({ id: o.id, cardItemId: o.cardItemId, status: o.status, listingUrl: o.listingUrl, publishedAt: o.publishedAt })),
         driveFolderId: process.env.DRIVE_FOLDER_ID || "",
+        gradingFeatureEnabled: isGradingFeatureEnabled(),
       });
     });
   }
@@ -3628,6 +3640,9 @@ export async function handler(req, res) {
     pathname.startsWith("/api/card-items/") &&
     pathname.endsWith("/send-to-grading")
   ) {
+    if (!isGradingFeatureEnabled()) {
+      return sendJson(res, 404, { error: "The grading feature is currently disabled." });
+    }
     const id = pathname.split("/")[3];
     return withState(async (state) => {
       const card = state.cardItems.find((item) => item.id === id);

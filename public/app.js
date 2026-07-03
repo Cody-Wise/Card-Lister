@@ -189,6 +189,13 @@ const driveImportButton = document.getElementById("driveImportButton");
 const driveImportMessage = document.getElementById("driveImportMessage");
 
 let gradingState = { pairs: [], unmatched: [], selected: new Set(), items: [], pollTimer: null };
+// Set from /api/bootstrap's gradingFeatureEnabled on every refresh() — the
+// grading feature is disabled by default (2026-07-04, Ximilar's results
+// weren't reliable enough) pending a different provider. Hides the nav tab,
+// its tab content, and every "Send to Grading" button; the server-side
+// routes are gated independently too (see src/routes/grading-routes.js and
+// the /send-to-grading route in src/app.js).
+let gradingFeatureEnabled = false;
 
 const gradingRefreshButton = document.getElementById("gradingRefreshButton");
 const gradingDriveFolderId = document.getElementById("gradingDriveFolderId");
@@ -538,7 +545,7 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   // back to listed/published for anything with a real listingUrl, so
   // clicking it on an already-published card would be a confusing no-op.
   const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
-  sendToGradingButton.style.display = isPublished ? "none" : "";
+  sendToGradingButton.style.display = isPublished || !gradingFeatureEnabled ? "none" : "";
   const el = document.getElementById("reviewImages");
   if (images && images.length) {
     const sorted = [...images].sort((a, b) => a.side === "front" ? -1 : b.side === "front" ? 1 : 0);
@@ -1751,7 +1758,7 @@ function renderCards() {
             : `<button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
           }
           <button class="btn btn-sm btn-outline" data-action="approve-card" data-id="${card.id}">Approve</button>
-          ${isPublished ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
+          ${isPublished || !gradingFeatureEnabled ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
           <button class="btn btn-sm btn-outline btn-danger" data-action="delete-card" data-id="${card.id}">Del</button>
         </div>
       </div>
@@ -1769,6 +1776,14 @@ function renderBatchFilter() {
 async function refresh() {
   const boot = await api("/api/bootstrap");
   state = boot;
+  gradingFeatureEnabled = Boolean(boot.gradingFeatureEnabled);
+  const gradingNavButton = document.querySelector('.nav-item[data-tab="grading"]');
+  const gradingTabContent = document.getElementById("tab-grading");
+  if (gradingNavButton) gradingNavButton.style.display = gradingFeatureEnabled ? "" : "none";
+  if (gradingTabContent) gradingTabContent.style.display = gradingFeatureEnabled ? "" : "none";
+  if (!gradingFeatureEnabled && gradingNavButton?.classList.contains("active")) {
+    document.querySelector('.nav-item[data-tab="cards"]')?.click();
+  }
   renderBatchSelect();
   renderBatchFilter();
   if (reviewState.cardId) {
