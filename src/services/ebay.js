@@ -1174,6 +1174,19 @@ function buildItemSpecifics(card) {
   if (isAuto) features.push("Autographed");
   if (features.length) specifics.Features = features;
 
+  // Applied last so a reviewer can correct anything above — including the
+  // otherwise-hardcoded fields (Type, Card Size, Material, Vintage, etc.)
+  // that aren't derived from OCR at all — without needing dedicated
+  // per-field UI/backend plumbing for every possible eBay item specific.
+  // Empty/whitespace-only values are treated as "no override" rather than
+  // clearing the specific, so a reviewer can revert to the auto-computed
+  // value by blanking the input.
+  const overrides = card.ebaySpecificsOverrides || {};
+  for (const [key, rawValue] of Object.entries(overrides)) {
+    const value = String(rawValue ?? "").trim();
+    if (value) specifics[key] = [value];
+  }
+
   return specifics;
 }
 

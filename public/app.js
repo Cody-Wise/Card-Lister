@@ -2277,15 +2277,41 @@ approveReviewButton.addEventListener("click", async () => {
   } catch (e) { reviewMessage.textContent = e.message; }
 });
 
+function escapeAttr(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+// Editable so a reviewer can correct anything eBay's item specifics show —
+// including fields that are otherwise hardcoded (Type, Vintage, Card Size,
+// Material, etc.) rather than derived from OCR — without needing dedicated
+// UI for every possible specific. Saved via the "Save" button below as
+// card.ebaySpecificsOverrides (see /api/card-items/:id/ebay-save), which
+// buildItemSpecifics() consults last so it takes precedence over whatever
+// it auto-computed. Blanking a field and saving reverts it to that
+// auto-computed default rather than clearing it outright.
 function renderEbaySpecifics(specifics) {
   if (!specifics || !Object.keys(specifics).length) {
     ebaySpecifics.innerHTML = `<div class="muted">No item specifics.</div>`;
     return;
   }
   const rows = Object.entries(specifics)
-    .map(([k, v]) => `<tr><td style="font-weight:600;padding:2px 8px 2px 0;font-size:0.82rem">${k}</td><td style="font-size:0.82rem">${v}</td></tr>`)
+    .map(([k, v]) => {
+      const value = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+      return `<tr>
+        <td style="font-weight:600;padding:2px 8px 2px 0;font-size:0.82rem;white-space:nowrap;vertical-align:middle">${k}</td>
+        <td style="padding:2px 0"><input type="text" data-specific-key="${escapeAttr(k)}" value="${escapeAttr(value)}" style="width:100%;font-size:0.82rem" /></td>
+      </tr>`;
+    })
     .join("");
-  ebaySpecifics.innerHTML = `<table>${rows}</table>`;
+  ebaySpecifics.innerHTML = `<table style="width:100%">${rows}</table>`;
+}
+
+function collectEbaySpecificsOverrides() {
+  const overrides = {};
+  ebaySpecifics.querySelectorAll("input[data-specific-key]").forEach((input) => {
+    overrides[input.dataset.specificKey] = input.value;
+  });
+  return overrides;
 }
 
 async function loadEbayPreview(cardId, card, options = {}) {
@@ -2511,6 +2537,7 @@ saveEbayListingButton.addEventListener("click", async () => {
       ebayTitle: title,
       ebayDescription: description,
       ebayCategoryId: categoryId,
+      specificsOverrides: collectEbaySpecificsOverrides(),
       ...listingConfig,
     };
     if (!isNaN(price) && price > 0) patches.recommendedPrice = price;

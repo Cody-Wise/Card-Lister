@@ -2110,6 +2110,12 @@ export async function handler(req, res) {
       if (body.title !== undefined) card.ebayTitle = body.title;
       if (body.description !== undefined) card.ebayDescription = body.description;
       if (body.specifics !== undefined) card.ebaySpecifics = body.specifics;
+      // Distinct from ebaySpecifics above (a display cache overwritten by
+      // every /ebay-preview call) — this is what buildItemSpecifics()
+      // actually consults to let a reviewer override any item specific,
+      // including the ones that are otherwise hardcoded (Type, Vintage,
+      // Card Size, Material, etc.) rather than derived from OCR.
+      if (body.specificsOverrides !== undefined) card.ebaySpecificsOverrides = body.specificsOverrides;
       if (body.ebayCategoryId !== undefined) card.ebayCategoryId = body.ebayCategoryId;
       if (body.recommendedPrice !== undefined) card.recommendedPrice = body.recommendedPrice;
       card.updatedAt = nowIso();
