@@ -1,9 +1,43 @@
-export async function readJson(req) {
+const DEFAULT_MAX_REQUEST_BYTES = 50 * 1024 * 1024;
+
+function maxRequestBytes() {
+  const parsed = Number(process.env.MAX_REQUEST_BYTES);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_REQUEST_BYTES;
+}
+
+function tooLarge(maxBytes) {
+  const error = new Error(`Request body exceeds ${maxBytes} bytes`);
+  error.statusCode = 413;
+  return error;
+}
+
+export async function readJson(req, { maxBytes = maxRequestBytes() } = {}) {
+  // Reject up front when the client declares an oversized body, so we can send a
+  // clean 413 without draining the stream.
+  const declaredLength = Number(req.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw tooLarge(maxBytes);
+  }
+
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      // Defense in depth for chunked/unlabelled bodies that exceed the cap.
+      throw tooLarge(maxBytes);
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const error = new Error("Request body is not valid JSON");
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 export function sendJson(res, statusCode, payload) {

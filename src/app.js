@@ -21,24 +21,21 @@ import {
   normalizeOrderDate,
   normalizeOrderLineDate,
   createDraftOffers,
-  createEbayAuthUrlState,
-  consumeEbayAuthUrlState,
   createInventoryItem,
   publishOffers,
   deleteEbayOffer,
   updateOfferPrices,
   getEbayConfig,
-  setEbayConfig,
-  getEbayAuthUrl,
-  exchangeEbayCode,
-  refreshEbayToken,
   buildEBayTitleForCard,
   buildEBayDescriptionForCard,
   buildItemSpecificsForCard,
   updateEbayListingPrice,
 } from "./services/ebay.js";
-import { fetchEbaySetup } from "./services/ebay-setup.js";
-import { fetchBrowseListingDatesByLegacyId, hasBrowseConfig } from "./services/ebay-browse.js";
+import {
+  fetchBrowseListingDatesByLegacyId,
+  fetchBrowseListingImagesByLegacyId,
+  hasBrowseConfig,
+} from "./services/ebay-browse.js";
 import { calculatePrice } from "./services/pricing.js";
 import {
   parseApifySoldListings,
@@ -47,22 +44,12 @@ import {
   getApifyMarketHeatReport,
   buildApifyLookupKey,
 } from "./services/apify.js";
-import {
-  getAuthUrl,
-  hasDriveConfig,
-  getDriveStatus,
-  handleCallback,
-  renameFile,
-  getFileInfo,
-  disconnect,
-  listFolder,
-  matchPairs,
-  downloadFile,
-  createFolder,
-  moveFile,
-} from "./services/drive.js";
+import { renameFile, getFileInfo, listFolder, createFolder, moveFile } from "./services/drive.js";
+import { handleDriveApiRoutes } from "./routes/drive-routes.js";
+import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
 import {
   isAuthenticated,
+  isAllowedEmail,
   getGoogleOAuthUrl,
   exchangeGoogleCode,
   setSessionCookie,
@@ -89,7 +76,9 @@ async function serveStatic(req, res, pathname) {
           ? "text/css; charset=utf-8"
           : ext === ".js"
             ? "text/javascript; charset=utf-8"
-            : "application/octet-stream";
+            : ext === ".png"
+              ? "image/png"
+              : "application/octet-stream";
     res.writeHead(200, { "Content-Type": contentType });
     res.end(body);
     return true;
@@ -104,6 +93,7 @@ function cleanBatch(batch) {
 
 function isPublishedOffer(offer) {
   if (!offer) return false;
+  if (offer.status === "sold" || offer.publishState === "sold") return false;
   return (
     offer.status === "published" ||
     offer.status === "active" ||
@@ -114,6 +104,11 @@ function isPublishedOffer(offer) {
 
 function cleanCard(card, offers = []) {
   const normalized = { ...card };
+  if (normalized.publishState === "sold" || normalized.status === "sold") {
+    normalized.status = "sold";
+    normalized.publishState = "sold";
+    return normalized;
+  }
   const published = (
     normalized.publishState === "published" ||
     normalized.status === "listed" ||
@@ -139,6 +134,27 @@ function maskToken(value) {
   if (!raw) return null;
   if (raw.length <= 12) return `${raw.slice(0, 4)}...`;
   return `${raw.slice(0, 6)}...${raw.slice(-4)}`;
+}
+
+function normalizeListingIdentityText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function listingPreviewLooksStale(card = {}) {
+  const haystack = normalizeListingIdentityText(
+    `${card.ebayTitle || ""} ${card.ebayDescription || ""} ${JSON.stringify(card.ebaySpecifics || {})}`,
+  );
+  if (!haystack) return true;
+  const playerTokens = normalizeListingIdentityText(card.candidatePlayer || card.playerName || "")
+    .split(" ")
+    .filter((token) => token.length > 2);
+  if (playerTokens.length && !playerTokens.some((token) => haystack.includes(token))) {
+    return true;
+  }
+  return false;
 }
 
 function safeEbayHealthConfig() {
@@ -358,7 +374,7 @@ function parseBoolean(value) {
   return value === true || value === "true" || value === "1" || value === 1 || value === "on";
 }
 
-function toPositiveInt(value, fallback) {
+export function toPositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
@@ -390,12 +406,12 @@ function moneyAmount(value) {
   return Number.isFinite(parsed) ? `$${parsed.toFixed(2)}` : "n/a";
 }
 
-function lineItemQuantity(value) {
+export function lineItemQuantity(value) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function lineItemPrice(lineItem = {}) {
+export function lineItemPrice(lineItem = {}) {
   const candidates = [
     lineItem.lineItemCost,
     lineItem.totalAmount,
@@ -435,7 +451,7 @@ function lineItemPrice(lineItem = {}) {
   return null;
 }
 
-function lineItemSku(lineItem = {}) {
+export function lineItemSku(lineItem = {}) {
   const candidates = [
     lineItem.sku,
     lineItem.skuId,
@@ -450,7 +466,7 @@ function lineItemSku(lineItem = {}) {
   return null;
 }
 
-function lineItemDisplayName(lineItem = {}) {
+export function lineItemDisplayName(lineItem = {}) {
   return String(
     lineItem.title ||
       lineItem.itemTitle ||
@@ -466,7 +482,7 @@ function lineItemDisplayName(lineItem = {}) {
   ).trim();
 }
 
-function lineItemListingId(lineItem = {}) {
+export function lineItemListingId(lineItem = {}) {
   const candidates = [
     lineItem.legacyItemId,
     lineItem.itemId,
@@ -485,7 +501,7 @@ function buildEbayItemUrl(itemId) {
   return itemId ? `https://www.ebay.com/itm/${encodeURIComponent(itemId)}` : null;
 }
 
-function extractEbayListingId(value) {
+export function extractEbayListingId(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
   const itemMatch = /\/itm\/(?:[^/?#]+\/)?(\d+)/i.exec(raw);
@@ -498,7 +514,7 @@ function buildEbaySellerOrderUrl(orderId) {
   return orderId ? `https://www.ebay.com/sh/ord/details?orderid=${encodeURIComponent(orderId)}` : null;
 }
 
-function lineItemTotal(lineItem = {}, fallbackQuantity) {
+export function lineItemTotal(lineItem = {}, fallbackQuantity) {
   const quantity = toPositiveInt(fallbackQuantity, lineItemQuantity(lineItem.quantity || fallbackQuantity)) || 1;
   const explicitTotal = lineItemPrice({
     totalPrice: lineItem.totalPrice,
@@ -512,7 +528,7 @@ function lineItemTotal(lineItem = {}, fallbackQuantity) {
   return parsedUnitPrice != null ? parsedUnitPrice * quantity : null;
 }
 
-function normalizeSalesCurrencyValue(value) {
+export function normalizeSalesCurrencyValue(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
@@ -566,7 +582,7 @@ const CARD_TITLE_IGNORE_WORDS = new Set([
   "trading",
 ]);
 
-function normalizeCardTitleText(value) {
+export function normalizeCardTitleText(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -579,7 +595,7 @@ function cardSetTokens(value) {
     .filter((token) => token && !CARD_TITLE_IGNORE_WORDS.has(token) && !/^\d+$/.test(token));
 }
 
-function cardTitleCandidates(card = {}) {
+export function cardTitleCandidates(card = {}) {
   return [
     card.ebayTitle,
     buildCardSalesLabel(card),
@@ -588,7 +604,7 @@ function cardTitleCandidates(card = {}) {
     .filter(Boolean);
 }
 
-function scoreCardTitleMatch(title, card = {}) {
+export function scoreCardTitleMatch(title, card = {}) {
   const haystack = normalizeCardTitleText(title);
   if (!haystack) return -1;
 
@@ -749,7 +765,7 @@ function rememberCardEbayTitle(card, title) {
   return card;
 }
 
-function rememberOfferEbayTitle(offer, title) {
+export function rememberOfferEbayTitle(offer, title) {
   const normalized = String(title || "").trim();
   if (!offer || !normalized) return offer;
   if (offer.ebayTitle !== normalized) {
@@ -776,7 +792,7 @@ function isEbayAuthFailure(error) {
   );
 }
 
-function pickImageUrl(...values) {
+export function pickImageUrl(...values) {
   const flattened = values.flatMap((value) => (Array.isArray(value) ? value : [value]));
   return normalizeImageUrlList(flattened)[0] || "";
 }
@@ -878,7 +894,7 @@ function hasMeaningfulCardSightSummary(summary) {
   return Number.isFinite(compPrice) && compPrice > 0;
 }
 
-function buildEbayPricingSummary(record = {}, soldComps = [], activeListings = []) {
+export function buildEbayPricingSummary(record = {}, soldComps = [], activeListings = []) {
   const pricing = calculatePrice({
     soldComps: Array.isArray(soldComps) ? soldComps : [],
     activeListings: Array.isArray(activeListings) ? activeListings : [],
@@ -917,6 +933,80 @@ function buildEbayPricingSummary(record = {}, soldComps = [], activeListings = [
   };
 }
 
+// Compares a listing's current price against its comp-derived target price and
+// classifies it aligned/overpriced/underpriced. Shared by the manual reprice
+// route and the scheduled repricing job.
+export function buildManualRepricingSignal(card, offer, price) {
+  const pricingSummary = offer?.cardhedgePricingSummary || card?.cardhedgePricingSummary || null;
+  const recommendedPrice = normalizeSalesCurrencyValue(card?.recommendedPrice);
+  const source = pricingSummary?.source || (pricingSummary ? "cardhedge" : "recommended");
+  const rawTarget = pricingSummary?.compPrice ?? recommendedPrice;
+  const targetPrice = normalizeSalesCurrencyValue(rawTarget);
+  let low = normalizeSalesCurrencyValue(pricingSummary?.low);
+  let high = normalizeSalesCurrencyValue(pricingSummary?.high);
+
+  const hasMeaningfulTarget = Number.isFinite(targetPrice) && targetPrice > 0;
+  const hasMeaningfulRange =
+    (Number.isFinite(low) && low > 0) || (Number.isFinite(high) && high > 0);
+
+  if (!hasMeaningfulTarget && !hasMeaningfulRange) {
+    return {
+      status: "unavailable",
+      source,
+      targetPrice: null,
+      low: null,
+      high: null,
+      deltaAmount: null,
+      deltaPct: null,
+    };
+  }
+
+  if (!Number.isFinite(low) && hasMeaningfulTarget) {
+    low = normalizeSalesCurrencyValue(targetPrice * 0.9);
+  }
+  if (!Number.isFinite(high) && hasMeaningfulTarget) {
+    high = normalizeSalesCurrencyValue(targetPrice * 1.1);
+  }
+
+  if (!hasMeaningfulTarget || !Number.isFinite(price)) {
+    return {
+      status: "unavailable",
+      source,
+      targetPrice: hasMeaningfulTarget ? targetPrice : null,
+      low: Number.isFinite(low) && low > 0 ? low : null,
+      high: Number.isFinite(high) && high > 0 ? high : null,
+      deltaAmount: null,
+      deltaPct: null,
+    };
+  }
+
+  const deltaAmount = normalizeSalesCurrencyValue(price - targetPrice) || 0;
+  const deltaPct = targetPrice ? deltaAmount / targetPrice : null;
+  let status = "aligned";
+
+  if (
+    (Number.isFinite(high) && price > high) ||
+    (Number.isFinite(deltaPct) && deltaPct >= 0.15)
+  ) {
+    status = "overpriced";
+  } else if (
+    (Number.isFinite(low) && price < low) ||
+    (Number.isFinite(deltaPct) && deltaPct <= -0.15)
+  ) {
+    status = "underpriced";
+  }
+
+  return {
+    status,
+    source,
+    targetPrice,
+    low: Number.isFinite(low) ? low : null,
+    high: Number.isFinite(high) ? high : null,
+    deltaAmount,
+    deltaPct: Number.isFinite(deltaPct) ? deltaPct : null,
+  };
+}
+
 function inferSportFromTitle(title = "") {
   const haystack = normalizeCardTitleText(title);
   if (!haystack) return "";
@@ -949,7 +1039,7 @@ function inferSportFromTitle(title = "") {
   return "";
 }
 
-async function withTimeout(promise, timeoutMs, label = "Operation") {
+export async function withTimeout(promise, timeoutMs, label = "Operation") {
   let timeoutId = null;
   try {
     return await Promise.race([
@@ -963,7 +1053,7 @@ async function withTimeout(promise, timeoutMs, label = "Operation") {
   }
 }
 
-function buildCardSightLookupMetadata(card = {}, titleHint = "", imageUrl = "") {
+export function buildCardSightLookupMetadata(card = {}, titleHint = "", imageUrl = "") {
   return {
     playerName: card?.candidatePlayer || "",
     year: card?.candidateYear || null,
@@ -991,7 +1081,7 @@ function buildCardSightLookupMetadata(card = {}, titleHint = "", imageUrl = "") 
   };
 }
 
-function buildOfferCardSightLookupMetadata(offer = {}, titleHint = "", imageUrl = "") {
+export function buildOfferCardSightLookupMetadata(offer = {}, titleHint = "", imageUrl = "") {
   const stableTitle = String(titleHint || offer?.ebayTitle || offer?.title || "").trim();
   return {
     playerName: "",
@@ -1266,7 +1356,7 @@ function scheduleOfferCardSightHydration({ listingId, sku, titleHint = "", image
   }, 0);
 }
 
-function resolveCardFromSalesLine({
+export function resolveCardFromSalesLine({
   cardById,
   cardBySku,
   cardByListingId,
@@ -1309,7 +1399,7 @@ function resolveCardFromSalesLine({
   return hasTie ? null : bestCard;
 }
 
-function buildCardSalesLabel(card) {
+export function buildCardSalesLabel(card) {
   if (!card) return "Unmatched sale item";
   const segments = [
     card.candidateYear,
@@ -1321,9 +1411,143 @@ function buildCardSalesLabel(card) {
   return segments.join(" · ");
 }
 
+export function applySoldSaleToCard(card, sale = {}) {
+  if (!card) return false;
+  const normalizedAmount = normalizeSalesCurrencyValue(sale.totalAmount ?? sale.unitPrice);
+  const normalizedUnitPrice = normalizeSalesCurrencyValue(sale.unitPrice ?? sale.totalAmount);
+  const nextSoldAt = sale.soldAt || null;
+  const nextSoldQty = Number.isFinite(sale.quantity) ? sale.quantity : 1;
+  const changed = (
+    card.status !== "sold" ||
+    card.publishState !== "sold" ||
+    card.soldAt !== nextSoldAt ||
+    normalizeSalesCurrencyValue(card.soldAmount) !== normalizedAmount ||
+    normalizeSalesCurrencyValue(card.soldPrice) !== normalizedUnitPrice ||
+    Number(card.soldQuantity || 0) !== nextSoldQty ||
+    String(card.soldOrderId || "") !== String(sale.orderId || "") ||
+    String(card.soldListingId || "") !== String(sale.listingId || "")
+  );
+  card.status = "sold";
+  card.publishState = "sold";
+  card.soldAt = nextSoldAt;
+  card.soldAmount = normalizedAmount;
+  card.soldPrice = normalizedUnitPrice;
+  card.soldQuantity = nextSoldQty;
+  card.soldOrderId = sale.orderId || null;
+  card.soldListingId = sale.listingId || null;
+  card.soldItemUrl = sale.itemUrl || null;
+  card.updatedAt = nowIso();
+  return changed;
+}
+
+export function applySoldSaleToOffer(offer, sale = {}) {
+  if (!offer) return false;
+  const normalizedAmount = normalizeSalesCurrencyValue(sale.totalAmount ?? sale.unitPrice);
+  const normalizedUnitPrice = normalizeSalesCurrencyValue(sale.unitPrice ?? sale.totalAmount);
+  const nextSoldAt = sale.soldAt || null;
+  const nextSoldQty = Number.isFinite(sale.quantity) ? sale.quantity : 1;
+  const changed = (
+    offer.status !== "sold" ||
+    offer.publishState !== "sold" ||
+    offer.soldAt !== nextSoldAt ||
+    normalizeSalesCurrencyValue(offer.soldAmount) !== normalizedAmount ||
+    normalizeSalesCurrencyValue(offer.soldPrice) !== normalizedUnitPrice ||
+    Number(offer.soldQuantity || 0) !== nextSoldQty ||
+    String(offer.orderId || "") !== String(sale.orderId || "") ||
+    String(offer.listingId || "") !== String(sale.listingId || "")
+  );
+  offer.status = "sold";
+  offer.publishState = "sold";
+  offer.soldAt = nextSoldAt;
+  offer.soldAmount = normalizedAmount;
+  offer.soldPrice = normalizedUnitPrice;
+  offer.soldQuantity = nextSoldQty;
+  offer.orderId = sale.orderId || null;
+  if (sale.listingId) offer.listingId = sale.listingId;
+  if (sale.itemUrl) offer.listingUrl = sale.itemUrl;
+  offer.updatedAt = nowIso();
+  return changed;
+}
+
 function normalizeText(value) {
   const raw = String(value || "").trim();
   return raw ? raw : null;
+}
+
+function normalizeSportLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const key = raw.toLowerCase();
+  if (key === "unmatched") return "Unmatched";
+  if (
+    key.includes("trading card") ||
+    key.includes("non sport") ||
+    key.includes("non-sport") ||
+    key.includes("pokemon") ||
+    key.includes("magic") ||
+    key.includes("mtg") ||
+    key.includes("yugioh") ||
+    key.includes("yu gi oh") ||
+    key.includes("star wars") ||
+    key.includes("lorcana") ||
+    key.includes("one piece") ||
+    key.includes("digimon")
+  ) {
+    return "Trading Cards";
+  }
+  if (key.includes("ufc") || key.includes("mma") || key.includes("mixed martial")) return "MMA";
+  if (key.includes("basketball") || key.includes("nba") || key.includes("hoops")) return "Basketball";
+  if (key.includes("football") || key.includes("nfl") || key.includes("gridiron")) return "Football";
+  if (key.includes("baseball") || key.includes("mlb") || key.includes("bowman")) return "Baseball";
+  if (
+    key.includes("soccer") ||
+    key.includes("fifa") ||
+    key.includes("uefa") ||
+    key.includes("premier league") ||
+    key.includes("mls")
+  ) {
+    return "Soccer";
+  }
+  if (key.includes("hockey") || key.includes("nhl")) return "Hockey";
+  return "";
+}
+
+function inferSalesSport(...values) {
+  for (const value of values) {
+    const normalized = normalizeSportLabel(value);
+    if (normalized) return normalized;
+  }
+  const haystack = String(values.filter(Boolean).join(" ")).toLowerCase();
+  if (!haystack) return "Unmatched";
+  if (/\b(nba|basketball|hoops|court kings|select basketball|prizm basketball)\b/.test(haystack)) {
+    return "Basketball";
+  }
+  if (/\b(allen iverson)\b/.test(haystack)) {
+    return "Basketball";
+  }
+  if (/\b(nfl|football|gridiron|score football|mosaic football|prizm football)\b/.test(haystack)) {
+    return "Football";
+  }
+  if (/\b(mlb|baseball|bowman|stadium club|topps chrome baseball|heritage)\b/.test(haystack)) {
+    return "Baseball";
+  }
+  if (/\b(soccer|fifa|uefa|premier league|mls|serie a|la liga|bundesliga)\b/.test(haystack)) {
+    return "Soccer";
+  }
+  if (/\b(hockey|nhl|upper deck hockey|opc|o pee chee)\b/.test(haystack)) {
+    return "Hockey";
+  }
+  if (/\b(ufc|mma|mixed martial)\b/.test(haystack)) {
+    return "MMA";
+  }
+  if (
+    /\b(trading card|non sport|non-sport|pokemon|magic|mtg|yugioh|yu gi oh|star wars|lorcana|one piece|digimon)\b/.test(
+      haystack,
+    )
+  ) {
+    return "Trading Cards";
+  }
+  return "Unmatched";
 }
 
 const AUCTION_DURATIONS = new Set([
@@ -1423,6 +1647,16 @@ function normalizeAutographFlag(body = {}, existingCard = {}) {
   return /\bauto\b|\bautograph\b|\bsigned\b|\bsignature\b/i.test(notes);
 }
 
+function isRawGradeValue(value = "") {
+  return ["Near Mint or Better", "Excellent", "Very Good", "Poor"].includes(String(value || "").trim());
+}
+
+function inferGradingCompany(value = "") {
+  const raw = String(value || "").trim();
+  const match = /^(PSA|BGS|SGC|CGC|CSG|BVG|BCCG|HGA)\b/i.exec(raw);
+  return match ? match[1].toUpperCase() : null;
+}
+
 function buildReviewPatch(body = {}, existingCard = {}) {
   const rookieMode = normalizeRookieMode(body, existingCard);
   const parsedPrintRun = parsePrintRunInput(
@@ -1431,6 +1665,20 @@ function buildReviewPatch(body = {}, existingCard = {}) {
   const explicitSerial = normalizeText(
     body.serialNumber ?? body.candidateSerialNumber ?? existingCard.serialNumber,
   );
+  const candidateGrade = normalizeText(body.grade ?? body.candidateGrade ?? existingCard.candidateGrade);
+  const gradingCompany = normalizeText(
+    body.gradingCompany ??
+      body.professionalGrader ??
+      existingCard.gradingCompany,
+  );
+  const certificationNumber = normalizeText(
+    body.certificationNumber ??
+      body.certificateNumber ??
+      existingCard.certificationNumber,
+  );
+  const isGraded =
+    parseBoolean(body.gradedFlag ?? body.isGraded) ||
+    Boolean(gradingCompany || certificationNumber || (candidateGrade && !isRawGradeValue(candidateGrade)));
   return {
     candidatePlayer: normalizeText(
       body.playerName ?? body.candidatePlayer ?? existingCard.candidatePlayer,
@@ -1457,8 +1705,10 @@ function buildReviewPatch(body = {}, existingCard = {}) {
     candidateRookieFlag: rookieMode !== "none",
     candidateVariantLabel:
       rookieMode === "rated" ? "Rated Rookie" : rookieMode === "generic" ? "Rookie RC" : null,
-    candidateGrade: normalizeText(body.grade ?? body.candidateGrade ?? existingCard.candidateGrade),
-    candidateCondition: parseBoolean(body.gradedFlag ?? body.isGraded)
+    candidateGrade,
+    gradingCompany: gradingCompany || inferGradingCompany(candidateGrade) || null,
+    certificationNumber: certificationNumber || null,
+    candidateCondition: isGraded
       ? "graded"
       : normalizeText(body.candidateCondition ?? existingCard.candidateCondition) ||
         existingCard.candidateCondition ||
@@ -1494,6 +1744,8 @@ function buildReviewOverrideMap(body = {}, existingOverrides = {}) {
   mark(["parallel", "candidateParallel"], "candidateParallel");
   mark(["brand", "candidateBrand"], "candidateBrand");
   mark(["grade", "candidateGrade"], "candidateGrade");
+  mark(["gradingCompany", "professionalGrader"], "gradingCompany");
+  mark(["certificationNumber", "certificateNumber"], "certificationNumber");
   mark(["baseHint", "candidateBaseHint"], "candidateBaseHint");
   mark(["autographHint", "candidateAutoHint"], "candidateAutoHint");
   mark(["serialNumber", "candidateSerialNumber"], "serialNumber");
@@ -1529,6 +1781,13 @@ function reviewPatchTouchesIdentity(body = {}) {
     "candidateAutoHint",
     "grade",
     "candidateGrade",
+    "gradingCompany",
+    "professionalGrader",
+    "certificationNumber",
+    "certificateNumber",
+    "gradedFlag",
+    "isGraded",
+    "candidateCondition",
     "serialNumber",
     "candidateSerialNumber",
     "printRun",
@@ -1584,8 +1843,7 @@ export async function handler(req, res) {
     }
     try {
       const userInfo = await exchangeGoogleCode(req, code);
-      const adminEmail = (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
-      if (adminEmail && userInfo.email.toLowerCase() !== adminEmail) {
+      if (!isAllowedEmail(userInfo.email)) {
         res.writeHead(302, { Location: `/login.html?error=${encodeURIComponent("Access denied")}` });
         return res.end();
       }
@@ -1613,6 +1871,7 @@ export async function handler(req, res) {
     pathname === "/privacy.html" ||
     pathname === "/public/login.html" ||
     pathname === "/public/privacy.html" ||
+    pathname === "/public/logo-badge.png" ||
     (pathname === "/public/styles.css" && !isAuthenticated(req));
 
   if (isPublicAsset) {
@@ -1671,182 +1930,9 @@ export async function handler(req, res) {
     });
   }
 
-  if (req.method === "GET" && pathname === "/api/drive/auth-url") {
-    const url = getAuthUrl(req);
-    if (!url) return sendJson(res, 400, { error: "Drive not configured" });
-    return sendJson(res, 200, { url });
-  }
-
-  if (req.method === "GET" && pathname === "/api/drive/callback") {
-    const code = url.searchParams.get("code");
-    if (!code) return sendJson(res, 400, { error: "Missing code" });
-    try {
-      const tokens = await handleCallback(code, req);
-      return sendJson(res, 200, { ok: true, hasRefreshToken: Boolean(tokens.refresh_token) });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "GET" && pathname === "/api/drive/status") {
-    return sendJson(res, 200, {
-      configured: hasDriveConfig(),
-      ...(await getDriveStatus()),
-    });
-  }
-
-  if (req.method === "POST" && pathname === "/api/drive/disconnect") {
-    await disconnect();
-    return sendJson(res, 200, { ok: true });
-  }
-
-  if (req.method === "POST" && pathname === "/api/drive/scan") {
-    const body = await readJson(req);
-    const folderId = body.folderId;
-    if (!folderId) return sendJson(res, 400, { error: "folderId required" });
-    try {
-      const files = await listFolder(folderId);
-      const matched = matchPairs(files);
-      return sendJson(res, 200, {
-        totalFiles: files.length,
-        pairs: matched.pairs,
-        unmatched: matched.unmatched,
-        imageFiles: files.filter((f) => /\.(jpg|jpeg|png|webp|gif|bmp|tiff)$/i.test(f.name)).length,
-      });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "POST" && pathname === "/api/drive/import") {
-    const body = await readJson(req);
-    const pairs = body.pairs;
-    if (!Array.isArray(pairs) || pairs.length === 0) {
-      return sendJson(res, 400, { error: "No pairs to import" });
-    }
-    const importConcurrency = Math.max(
-      1,
-      Math.min(
-        8,
-        Number.parseInt(process.env.GOOGLE_DRIVE_IMPORT_CONCURRENCY || "6", 10) || 6,
-      ),
-    );
-    const downloadedPairs = new Array(pairs.length);
-    let nextPairIndex = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(importConcurrency, pairs.length) }, async () => {
-        while (nextPairIndex < pairs.length) {
-          const pairIndex = nextPairIndex;
-          nextPairIndex += 1;
-          const pair = pairs[pairIndex];
-          const [frontBuf, backBuf] = await Promise.all([
-            downloadFile(pair.front.id),
-            downloadFile(pair.back.id),
-          ]);
-          downloadedPairs[pairIndex] = {
-            pair,
-            frontDataUrl: `data:${pair.front.mimeType || "image/png"};base64,${frontBuf.toString("base64")}`,
-            backDataUrl: `data:${pair.back.mimeType || "image/png"};base64,${backBuf.toString("base64")}`,
-          };
-        }
-      }),
-    );
-
-    const result = await withState(async (state) => {
-      const batch = {
-        id: createId(state, "batch"),
-        source: "google_drive",
-        notes: body.notes || "",
-        status: "uploaded",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-        publishChecklist: [
-          { label: "All cards have been processed", checked: false },
-          { label: "All cards have been reviewed", checked: false },
-          { label: "Pricing is reasonable and consistent", checked: false },
-          { label: "Comp inclusion decisions are final", checked: false },
-          { label: "No critical errors in pricing evidence", checked: false },
-        ],
-      };
-      state.batches.push(batch);
-      const created = [];
-      for (const downloadedPair of downloadedPairs) {
-        const { pair, frontDataUrl, backDataUrl } = downloadedPair;
-        const cardItemId = createId(state, "card");
-        const frontImage = await saveImageRecord(state, {
-          cardItemId,
-          side: "front",
-          dataUrl: frontDataUrl,
-          fileName: pair.front.name,
-          skipSupabaseUpload: true,
-        });
-        const backImage = await saveImageRecord(state, {
-          cardItemId,
-          side: "back",
-          dataUrl: backDataUrl,
-          fileName: pair.back.name,
-          skipSupabaseUpload: true,
-        });
-        state.cardImages.push(frontImage, backImage);
-        const cardItem = {
-          id: cardItemId,
-          batchId: batch.id,
-          confidenceScore: 0,
-          recommendedPrice: null,
-          currency: "USD",
-          isThickCard: false,
-          candidateBaseHint: false,
-          candidateAutoHint: false,
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-          publishState: "draft",
-          frontImageId: frontImage.id,
-          backImageId: backImage.id,
-          notes: pair.notes || "",
-          sku: `${batch.id}-${cardItemId}`,
-          status: "ocr_pending",
-          driveSourceFolderId: body.folderId || null,
-          driveFrontFileId: pair.front.id,
-          driveBackFileId: pair.back.id,
-        };
-        state.cardItems.push(cardItem);
-        created.push(cardItem);
-      }
-      batch.updatedAt = nowIso();
-      batch.status = "processing";
-      createAuditEvent(state, "batch", batch.id, "drive_import", { cardCount: created.length });
-      return { batchId: batch.id, createdIds: created.map((c) => c.id) };
-    });
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ batchId: result.batchId, cardCount: result.createdIds.length }));
-    (async () => {
-      const markCardProcessingFailed = async (cardId, error) => {
-        await withState(async (state) => {
-          const card = (state.cardItems || []).find((item) => item.id === cardId);
-          if (!card) return;
-          card.status = "needs_review";
-          card.ocrProvider = card.ocrProvider || "ebay_image_search";
-          card.ocrNotes = [
-            card.ocrNotes,
-            `Processing fallback: ${error?.message || error || "unknown error"}`,
-          ].filter(Boolean).join(" | ");
-          card.updatedAt = nowIso();
-        });
-      };
-      for (const cardId of result.createdIds) {
-        await processCardItem(cardId).catch((error) => markCardProcessingFailed(cardId, error));
-      }
-      await withState(async (state) => {
-        const batch = (state.batches || []).find((entry) => entry.id === result.batchId);
-        if (!batch) return;
-        const cards = (state.cardItems || []).filter((item) => item.batchId === result.batchId);
-        const open = cards.filter((item) => item.status === "new" || item.status === "ocr_pending");
-        const needsReview = cards.some((item) => item.status === "needs_review");
-        batch.status = open.length ? "processing" : needsReview ? "needs_review" : "ready_to_publish";
-        batch.updatedAt = nowIso();
-      });
-    })();
-    return;
+  if (pathname.startsWith("/api/drive/")) {
+    const handled = await handleDriveApiRoutes(req, res, { pathname });
+    if (handled) return;
   }
 
   if (req.method === "POST" && pathname === "/api/seed") {
@@ -1917,165 +2003,11 @@ export async function handler(req, res) {
     });
   }
 
-  if (req.method === "GET" && pathname === "/api/ebay/auth-url") {
-    try {
-      const requestHint = {
-        host: url.host,
-        hostname: url.hostname,
-        port: url.port,
-        protocol: url.protocol,
-      };
-      const { state, redirectUri } = createEbayAuthUrlState(requestHint);
-      const requestedScopeProfile = url.searchParams.get("scopeProfile");
-      const scopeProfile = ["base", "minimal", "portal"].includes(requestedScopeProfile) ? requestedScopeProfile : "default";
-      const authUrl = getEbayAuthUrl(requestHint, { state, scopeProfile });
-      const acceptHeader = String(req.headers.accept || "");
-      const wantsJson =
-        url.searchParams.get("format") === "json" ||
-        acceptHeader.includes("application/json");
-      if (!wantsJson) {
-        res.writeHead(302, { Location: authUrl });
-        return res.end();
-      }
-      return sendJson(res, 200, { url: authUrl, callbackUrl: redirectUri, scopeProfile });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "GET" && pathname === "/api/ebay/auth-callback") {
-    const query = url.searchParams;
-    const callbackError = query.get("error");
-    const callbackErrorDescription = query.get("error_description") || "Unknown error";
-    const code = query.get("code");
-    const state = query.get("state");
-    if (callbackError) {
-      res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-      return res.end(
-        `<html><body style="font-family: sans-serif; padding: 2rem;"><h2>Authorization Failed</h2><p>${callbackError}: ${callbackErrorDescription}</p></body></html>`,
-      );
-    }
-    if (!code) return sendJson(res, 400, { error: "Missing code parameter" });
-    let requestHint = null;
-    try {
-      const redirectUri = state ? consumeEbayAuthUrlState(state) : null;
-      requestHint = {
-        host: url.host,
-        hostname: url.hostname,
-        port: url.port,
-        protocol: url.protocol,
-      };
-      if (redirectUri) requestHint.redirectUri = redirectUri;
-      exchangeEbayCode(code, requestHint)
-        .then((tokens) => {
-          setEbayConfig({
-            userAccessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-          });
-          console.log("eBay OAuth token exchange completed.");
-        })
-        .catch((error) => {
-          console.error("eBay OAuth token exchange failed:", error.message);
-        });
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      return res.end(
-        `<html><body style="font-family: sans-serif; padding: 2rem;"><h2>eBay Authorization Received</h2><p>The app received the eBay authorization code and is finishing token setup in the background.</p><p>Wait a few seconds, then return to CardLister settings and refresh eBay status.</p></body></html>`,
-      );
-    } catch (error) {
-      const callbackRedirectUri = requestHint?.redirectUri || "request-derived";
-      res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-      return res.end(
-        `<html><body style="font-family: sans-serif; padding: 2rem;"><h2>Authorization Failed</h2><p>${error.message}</p><p style="font-family: monospace; word-break: break-all;">callback_redirect_uri=${callbackRedirectUri}</p></body></html>`,
-      );
-    }
-  }
-
-  if (req.method === "POST" && pathname === "/api/ebay/refresh-token") {
-    try {
-      const { refreshToken } = await readJson(req);
-      if (refreshToken) setEbayConfig({ refreshToken });
-      const result = await refreshEbayToken();
-      return sendJson(res, 200, { ok: true, hasRefreshToken: Boolean(result.refresh_token) });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "POST" && pathname === "/api/ebay/reset-auth") {
-    try {
-      setEbayConfig({
-        userAccessToken: "",
-        refreshToken: "",
-      });
-      return sendJson(res, 200, { ok: true, reset: true });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "GET" && pathname === "/api/ebay/config") {
-    const config = getEbayConfig();
-    const hasToken = Boolean(config.userAccessToken);
-    const { userAccessToken: _, ...safeConfig } = config;
-    const configured = Boolean(
-      hasToken &&
-      safeConfig.merchantLocationKey &&
-      safeConfig.paymentPolicyId &&
-      safeConfig.fulfillmentPolicyId &&
-      safeConfig.returnPolicyId
-    );
-    return sendJson(res, 200, { configured, hasToken, config: safeConfig });
-  }
-
-  if (req.method === "GET" && pathname === "/api/ebay/setup") {
-    try {
-      const setup = await fetchEbaySetup();
-      return sendJson(res, 200, setup);
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
-  }
-
-  if (req.method === "POST" && pathname === "/api/ebay/auto-configure") {
-    try {
-      const setup = await fetchEbaySetup();
-      if (!setup.merchantLocationKey) {
-        return sendJson(res, 400, { error: "No merchant location found. Create one in your eBay account settings first." });
-      }
-      if (!setup.paymentPolicies.length) {
-        return sendJson(res, 400, { error: "No payment policy found. Create one in your eBay account settings first." });
-      }
-      if (!setup.fulfillmentPolicies.length) {
-        return sendJson(res, 400, { error: "No fulfillment policy found. Create one in your eBay account settings first." });
-      }
-      if (!setup.returnPolicies.length) {
-        return sendJson(res, 400, { error: "No return policy found. Create one in your eBay account settings first." });
-      }
-      setEbayConfig({
-        merchantLocationKey: setup.merchantLocationKey,
-        paymentPolicyId: setup.paymentPolicies[0].paymentPolicyId,
-        fulfillmentPolicyId: setup.fulfillmentPolicies[0].fulfillmentPolicyId,
-        returnPolicyId: setup.returnPolicies[0].returnPolicyId,
-        categoryId: process.env.EBAY_CATEGORY_ID || "261328",
-      });
-      return sendJson(res, 200, {
-        message: "eBay configured successfully",
-        config: {
-          merchantLocationKey: setup.merchantLocationKey,
-          paymentPolicyId: setup.paymentPolicies[0].paymentPolicyId,
-          fulfillmentPolicyId: setup.fulfillmentPolicies[0].fulfillmentPolicyId,
-          returnPolicyId: setup.returnPolicies[0].returnPolicyId,
-        },
-        availablePolicies: {
-          locations: setup.locations,
-          paymentPolicies: setup.paymentPolicies,
-          fulfillmentPolicies: setup.fulfillmentPolicies,
-          returnPolicies: setup.returnPolicies,
-        },
-      });
-    } catch (error) {
-      return sendJson(res, 400, { error: error.message });
-    }
+  if (pathname === "/api/ebay/auth-url" || pathname === "/api/ebay/auth-callback" ||
+      pathname === "/api/ebay/refresh-token" || pathname === "/api/ebay/reset-auth" ||
+      pathname === "/api/ebay/config" || pathname === "/api/ebay/setup" || pathname === "/api/ebay/auto-configure") {
+    const handled = await handleEbayOAuthRoutes(req, res, { pathname, url });
+    if (handled) return;
   }
 
   if (req.method === "POST" && pathname === "/api/ebay/generate-description") {
@@ -2094,11 +2026,13 @@ export async function handler(req, res) {
 
   if (req.method === "POST" && pathname.match(/^\/api\/card-items\/[^/]+\/ebay-preview$/)) {
     const id = pathname.split("/")[3];
+    const body = await readJson(req).catch(() => ({}));
     return withState(async (state) => {
       const card = state.cardItems.find((item) => item.id === id);
       if (!card) return notFound(res, "Card item not found");
+      const force = parseBoolean(body.force) || listingPreviewLooksStale(card);
       const title = buildEBayTitleForCard(card);
-      const description = await buildEBayDescriptionForCard(card);
+      const description = await buildEBayDescriptionForCard(card, { force });
       const specifics = buildItemSpecificsForCard(card);
       card.ebayTitle = title;
       card.ebayDescription = description;
@@ -2155,6 +2089,7 @@ export async function handler(req, res) {
       const pageSize = toPositiveInt(url.searchParams.get("pageSize"), 200);
       const maxPages = toPositiveInt(url.searchParams.get("maxPages"), 10);
       const filterSport = String(normalizeText(url.searchParams.get("sport")) || "").toLowerCase();
+      const syncSales = url.searchParams.get("sync") !== "0";
 
       const result = await fetchEbayFulfillmentOrders({
         startDate,
@@ -2170,13 +2105,22 @@ export async function handler(req, res) {
         const cardBySku = new Map();
         const cardByListingId = new Map();
         const cardByTitle = new Map();
+        const cardImagesByCardId = new Map();
+        const offerBySku = new Map();
+        const offerByListingId = new Map();
         const compsByCardId = new Map();
 
         for (const offer of state.offers || []) {
+          if (offer?.sku) {
+            offerBySku.set(String(offer.sku), offer);
+          }
+          const offerListingId = offer?.listingId || extractEbayListingId(offer?.listingUrl);
+          if (offerListingId) {
+            offerByListingId.set(String(offerListingId), offer);
+          }
           if (offer?.sku && offer?.cardItemId) {
             cardBySku.set(String(offer.sku), offer.cardItemId);
           }
-          const offerListingId = offer?.listingId || extractEbayListingId(offer?.listingUrl);
           if (offerListingId && offer?.cardItemId) {
             cardByListingId.set(String(offerListingId), offer.cardItemId);
           }
@@ -2195,6 +2139,14 @@ export async function handler(req, res) {
             }
           }
         }
+        for (const image of state.cardImages || []) {
+          if (!image?.cardItemId || !image?.url) continue;
+          const bucket = cardImagesByCardId.get(image.cardItemId) || { front: "", back: "", all: [] };
+          if (image.side === "front" && !bucket.front) bucket.front = image.url;
+          if (image.side === "back" && !bucket.back) bucket.back = image.url;
+          if (!bucket.all.includes(image.url)) bucket.all.push(image.url);
+          cardImagesByCardId.set(image.cardItemId, bucket);
+        }
         for (const comp of state.comps || []) {
           if (!comp?.cardItemId) continue;
           if (!String(comp?.source || "").toLowerCase().startsWith("cardhedge")) continue;
@@ -2204,12 +2156,31 @@ export async function handler(req, res) {
         }
 
         const monthAgg = new Map();
+        const matchedSalesByCardId = new Map();
         let totalUnits = 0;
         let matchedUnits = 0;
         let unmatchedUnits = 0;
         let totalAmount = 0;
         let matchedAmount = 0;
         let unmatchedAmount = 0;
+        const sportBreakdown = new Map();
+        let browseSaleImagesByListingId = {};
+
+        if (hasBrowseConfig()) {
+          const salesListingIds = [...new Set(
+            (result.orders || [])
+              .flatMap((order) => (Array.isArray(order?.lineItems) ? order.lineItems : []))
+              .map((item) => lineItemListingId(item))
+              .filter(Boolean),
+          )];
+          if (salesListingIds.length) {
+            try {
+              browseSaleImagesByListingId = await fetchBrowseListingImagesByLegacyId(salesListingIds);
+            } catch {
+              browseSaleImagesByListingId = {};
+            }
+          }
+        }
 
         for (const order of result.orders || []) {
           const items = Array.isArray(order.lineItems) ? order.lineItems : [];
@@ -2232,6 +2203,10 @@ export async function handler(req, res) {
             const orderId = order.orderId || order.order_id || order.orderNumber || null;
             const listingId = lineItemListingId(item);
             const itemUrl = buildEbayItemUrl(listingId);
+            const resolvedOffer =
+              (listingId ? offerByListingId.get(String(listingId)) : null) ||
+              (sku ? offerBySku.get(String(sku)) : null) ||
+              null;
             const resolvedCard = resolveCardFromSalesLine({
               cardById,
               cardBySku,
@@ -2243,10 +2218,33 @@ export async function handler(req, res) {
               itemUrl,
               title: lineItemDisplayName(item),
             });
+            const resolvedCardImages = resolvedCard?.id ? cardImagesByCardId.get(resolvedCard.id) : null;
             const isMatched = Boolean(resolvedCard);
-            const sport = String(normalizeText(resolvedCard?.candidateSport) || "Unmatched");
-            const matchedSport = sport || "Unmatched";
+            const browseListingImages = listingId ? browseSaleImagesByListingId[String(listingId)] : null;
+            const matchedSport = inferSalesSport(
+              resolvedCard?.candidateSport,
+              resolvedCard?.sport,
+              browseListingImages?.sport,
+              lineItemDisplayName(item),
+              sku,
+            );
             if (filterSport && matchedSport.toLowerCase() !== filterSport) continue;
+
+            const sportSummary = sportBreakdown.get(matchedSport) || {
+              sport: matchedSport,
+              quantity: 0,
+              totalAmount: 0,
+              matchedUnits: 0,
+              unmatchedUnits: 0,
+            };
+            sportSummary.quantity += quantity;
+            sportSummary.totalAmount += totalLinePrice || 0;
+            if (isMatched) {
+              sportSummary.matchedUnits += quantity;
+            } else {
+              sportSummary.unmatchedUnits += quantity;
+            }
+            sportBreakdown.set(matchedSport, sportSummary);
 
             const monthSportGroup = monthGroup.sports.get(matchedSport) || {
               sport: matchedSport,
@@ -2264,6 +2262,21 @@ export async function handler(req, res) {
               listingId ||
               orderId ||
               "Sale item";
+            const saleImageUrl = pickImageUrl(
+              item?.imageUrl || "",
+              item?.image?.imageUrl || "",
+              resolvedOffer?.imageUrl || "",
+              resolvedOffer?.imageUrls || [],
+              resolvedCard?.imageUrl || "",
+              resolvedCardImages?.front || "",
+              resolvedCardImages?.back || "",
+              resolvedCardImages?.all || [],
+              resolvedCard?.frontImageUrl || "",
+              resolvedCard?.backImageUrl || "",
+              resolvedCard?.imageUrls || [],
+              browseListingImages?.imageUrl || "",
+              browseListingImages?.imageUrls || [],
+            );
             const cardLabel = resolvedCard ? buildCardSalesLabel(resolvedCard) : lineTitle;
             const cardKey = resolvedCard?.id || `unmatched:${listingId || sku || lineTitle || "item"}`;
             const cardEntry = monthSportGroup.cards.get(cardKey) || {
@@ -2271,11 +2284,13 @@ export async function handler(req, res) {
               cardLabel: cardLabel || lineTitle || "Unmatched sale item",
               sport: matchedSport,
               sku: sku || null,
+              imageUrl: saleImageUrl || null,
               quantity: 0,
               totalAmount: 0,
               lines: [],
             };
             if (!monthSportGroup.cards.has(cardKey)) monthSportGroup.cards.set(cardKey, cardEntry);
+            if (!cardEntry.imageUrl && saleImageUrl) cardEntry.imageUrl = saleImageUrl;
 
             cardEntry.quantity += quantity;
             cardEntry.totalAmount += totalLinePrice || 0;
@@ -2300,11 +2315,58 @@ export async function handler(req, res) {
             if (isMatched) {
               matchedUnits += quantity;
               matchedAmount += totalLinePrice || 0;
+              const existingSale = matchedSalesByCardId.get(resolvedCard.id) || {
+                soldAt: null,
+                quantity: 0,
+                totalAmount: 0,
+                unitPrice: null,
+                orderId: null,
+                listingId: null,
+                itemUrl: null,
+              };
+              existingSale.quantity += quantity;
+              existingSale.totalAmount += totalLinePrice || 0;
+              existingSale.unitPrice = unitPrice != null ? unitPrice : existingSale.unitPrice;
+              if (!existingSale.soldAt || (soldAt && soldAt > existingSale.soldAt)) {
+                existingSale.soldAt = soldAt || existingSale.soldAt;
+                existingSale.orderId = orderId;
+                existingSale.listingId = listingId;
+                existingSale.itemUrl = itemUrl;
+              }
+              matchedSalesByCardId.set(resolvedCard.id, existingSale);
             } else {
               unmatchedUnits += quantity;
               unmatchedAmount += totalLinePrice || 0;
             }
             totalAmount += totalLinePrice || 0;
+          }
+        }
+
+        let syncedCards = 0;
+        let syncedOffers = 0;
+        if (syncSales) {
+          for (const [cardId, sale] of matchedSalesByCardId.entries()) {
+            const resolvedCard = cardById.get(cardId);
+            if (!resolvedCard) continue;
+            const cardChanged = applySoldSaleToCard(resolvedCard, sale);
+            if (cardChanged) {
+              syncedCards += 1;
+              createAuditEvent(state, "cardItem", resolvedCard.id, "sold_synced_from_ebay", {
+                soldAt: sale.soldAt || null,
+                soldAmount: normalizeSalesCurrencyValue(sale.totalAmount),
+                soldPrice: normalizeSalesCurrencyValue(sale.unitPrice),
+                soldQuantity: sale.quantity || 0,
+                orderId: sale.orderId || null,
+                listingId: sale.listingId || null,
+              });
+            }
+            for (const offer of state.offers || []) {
+              const matchesCard = offer?.cardItemId === resolvedCard.id;
+              const matchesListing = sale.listingId && String(offer?.listingId || "") === String(sale.listingId);
+              const matchesSku = resolvedCard.sku && String(offer?.sku || "") === String(resolvedCard.sku);
+              if (!matchesCard && !matchesListing && !matchesSku) continue;
+              if (applySoldSaleToOffer(offer, sale)) syncedOffers += 1;
+            }
           }
         }
 
@@ -2325,6 +2387,7 @@ export async function handler(req, res) {
                     cardLabel: entry.cardLabel || "Unmatched sale item",
                     sport: entry.sport,
                     sku: entry.sku,
+                    imageUrl: entry.imageUrl || null,
                     quantity: entry.quantity,
                     totalAmount: normalizeSalesCurrencyValue(entry.totalAmount),
                     lines: entry.lines,
@@ -2345,7 +2408,18 @@ export async function handler(req, res) {
             totalAmount: normalizeSalesCurrencyValue(totalAmount),
             matchedAmount: normalizeSalesCurrencyValue(matchedAmount),
             unmatchedAmount: normalizeSalesCurrencyValue(unmatchedAmount),
+            syncedCards,
+            syncedOffers,
           },
+          sportBreakdown: [...sportBreakdown.values()]
+            .map((entry) => ({
+              sport: entry.sport,
+              quantity: entry.quantity,
+              totalAmount: normalizeSalesCurrencyValue(entry.totalAmount),
+              matchedUnits: entry.matchedUnits,
+              unmatchedUnits: entry.unmatchedUnits,
+            }))
+            .sort((a, b) => (b.totalAmount || 0) - (a.totalAmount || 0)),
           groups: grouped,
         });
       });
@@ -2968,76 +3042,6 @@ export async function handler(req, res) {
       ),
     );
 
-    const buildManualRepricingSignal = (card, offer, price) => {
-      const pricingSummary = offer?.cardhedgePricingSummary || card?.cardhedgePricingSummary || null;
-      const recommendedPrice = normalizeSalesCurrencyValue(card?.recommendedPrice);
-      const source = pricingSummary?.source || (pricingSummary ? "cardhedge" : "recommended");
-      const rawTarget = pricingSummary?.compPrice ?? recommendedPrice;
-      const targetPrice = normalizeSalesCurrencyValue(rawTarget);
-      let low = normalizeSalesCurrencyValue(pricingSummary?.low);
-      let high = normalizeSalesCurrencyValue(pricingSummary?.high);
-
-      const hasMeaningfulTarget = Number.isFinite(targetPrice) && targetPrice > 0;
-      const hasMeaningfulRange =
-        (Number.isFinite(low) && low > 0) || (Number.isFinite(high) && high > 0);
-
-      if (!hasMeaningfulTarget && !hasMeaningfulRange) {
-        return {
-          status: "unavailable",
-          source,
-          targetPrice: null,
-          low: null,
-          high: null,
-          deltaAmount: null,
-          deltaPct: null,
-        };
-      }
-
-      if (!Number.isFinite(low) && hasMeaningfulTarget) {
-        low = normalizeSalesCurrencyValue(targetPrice * 0.9);
-      }
-      if (!Number.isFinite(high) && hasMeaningfulTarget) {
-        high = normalizeSalesCurrencyValue(targetPrice * 1.1);
-      }
-
-      if (!hasMeaningfulTarget || !Number.isFinite(price)) {
-        return {
-          status: "unavailable",
-          source,
-          targetPrice: hasMeaningfulTarget ? targetPrice : null,
-          low: Number.isFinite(low) && low > 0 ? low : null,
-          high: Number.isFinite(high) && high > 0 ? high : null,
-          deltaAmount: null,
-          deltaPct: null,
-        };
-      }
-
-      const deltaAmount = normalizeSalesCurrencyValue(price - targetPrice) || 0;
-      const deltaPct = targetPrice ? deltaAmount / targetPrice : null;
-      let status = "aligned";
-
-      if (
-        (Number.isFinite(high) && price > high) ||
-        (Number.isFinite(deltaPct) && deltaPct >= 0.15)
-      ) {
-        status = "overpriced";
-      } else if (
-        (Number.isFinite(low) && price < low) ||
-        (Number.isFinite(deltaPct) && deltaPct <= -0.15)
-      ) {
-        status = "underpriced";
-      }
-
-      return {
-        status,
-        source,
-        targetPrice,
-        low: Number.isFinite(low) ? low : null,
-        high: Number.isFinite(high) ? high : null,
-        deltaAmount,
-        deltaPct: Number.isFinite(deltaPct) ? deltaPct : null,
-      };
-    };
 
     let lookupSource = null;
     let offerLookupError = null;
@@ -3663,6 +3667,7 @@ export async function handler(req, res) {
 
       const meta = {
         playerName: card?.candidatePlayer || "",
+        sport: card?.candidateSport || "",
         year: card?.candidateYear || null,
         setName: card?.candidateSetName || "",
         cardNumber: card?.candidateCardNumber || "",
@@ -3675,6 +3680,7 @@ export async function handler(req, res) {
         variantLabel: card?.candidateVariantLabel || "",
         serialNumber: card?.serialNumber || null,
         printRun: card?.printRun || null,
+        titleHint: card?.ebayTitle || "",
       };
 
         const importedResult = await (async () => {
@@ -3684,14 +3690,23 @@ export async function handler(req, res) {
           return parseApifySoldListings(sourceRows, meta);
         })();
 
+      const isTradingCardComp =
+        /\b(trading cards|pokemon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/i.test(
+          String(meta?.sport || meta?.setName || meta?.titleHint || ""),
+        );
       const requestedLimit = requestedSource === "cardhedge"
         ? Number(process.env.CARDHEDGE_COMPS_COUNT || 50)
-        : Math.min(10, Number(process.env.APIFY_EBAY_SOLD_COUNT || 10));
+        : Math.max(
+            Number(process.env.APIFY_EBAY_SOLD_COUNT || 10),
+            isTradingCardComp ? 15 : 10,
+          );
       const importLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.round(requestedLimit), 100)
         : requestedSource === "cardhedge"
           ? 50
-          : 10;
+          : isTradingCardComp
+            ? 15
+            : 10;
       const imported = importedResult.comps.slice(0, importLimit);
       card.externalSoldComps = imported;
       const importedSource = String(importedResult.source || "").toLowerCase();

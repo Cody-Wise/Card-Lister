@@ -7,8 +7,19 @@ function getSessionSecret() {
   return process.env.SESSION_SECRET || "dev-secret-change-me";
 }
 
-function getAdminEmail() {
-  return (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+// ADMIN_EMAIL supports a comma-separated list, e.g. "a@x.com,b@x.com".
+function getAdminEmails() {
+  return (process.env.ADMIN_EMAIL || "")
+    .split(",")
+    .map((email) => email.toLowerCase().trim())
+    .filter(Boolean);
+}
+
+// True when no allowlist is configured (open access) or the email is on it.
+export function isAllowedEmail(email) {
+  const admins = getAdminEmails();
+  if (!admins.length) return true;
+  return admins.includes(String(email || "").toLowerCase().trim());
 }
 
 function sign(payload) {
@@ -82,8 +93,7 @@ export function clearSessionCookie(res) {
 export function isAuthenticated(req) {
   const session = getSessionFromRequest(req);
   if (!session) return false;
-  const admin = getAdminEmail();
-  if (admin && session.email.toLowerCase() !== admin) return false;
+  if (!isAllowedEmail(session.email)) return false;
   return true;
 }
 

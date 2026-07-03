@@ -22,7 +22,6 @@ const batchesList = document.getElementById("batchesList");
 const cardsList = document.getElementById("cardsList");
 const reviewCardSelect = document.getElementById("reviewCardSelect");
 const loadReviewCardButton = document.getElementById("loadReviewCardButton");
-const loadRecentCardSightSalesButton = document.getElementById("loadRecentCardSightSalesButton");
 const reviewSummary = document.getElementById("reviewSummary");
 const reviewPricingEvidence = document.getElementById("reviewPricingEvidence");
 const reviewPlayerName = document.getElementById("reviewPlayerName");
@@ -42,6 +41,8 @@ const reviewBaseHint = document.getElementById("reviewBaseHint");
 const reviewAutoHint = document.getElementById("reviewAutoHint");
 const reviewThickCard = document.getElementById("reviewThickCard");
 const reviewGrade = document.getElementById("reviewGrade");
+const reviewGradingCompany = document.getElementById("reviewGradingCompany");
+const reviewCertificationNumber = document.getElementById("reviewCertificationNumber");
 const reviewNotes = document.getElementById("reviewNotes");
 const saveReviewButton = document.getElementById("saveReviewButton");
 const saveReviewAndProcessButton = document.getElementById("saveReviewAndProcessButton");
@@ -70,6 +71,7 @@ const ebayBinFields = document.getElementById("ebayBinFields");
 const ebayAuctionFields = document.getElementById("ebayAuctionFields");
 const ebayCategoryId = document.getElementById("ebayCategoryId");
 const ebaySpecifics = document.getElementById("ebaySpecifics");
+const reviewOverlay = document.getElementById("reviewOverlay");
 const cardRows = document.getElementById("cardRows");
 const batchMessage = document.getElementById("batchMessage");
 const uploadMessage = document.getElementById("uploadMessage");
@@ -78,6 +80,7 @@ const ebaySetupOutput = document.getElementById("ebaySetupOutput");
 const seedDataButton = document.getElementById("seedDataButton");
 const seedMessage = document.getElementById("seedMessage");
 const publishedList = document.getElementById("publishedList");
+const salesRangePreset = document.getElementById("salesRangePreset");
 const salesDays = document.getElementById("salesDays");
 const salesStartDate = document.getElementById("salesStartDate");
 const salesEndDate = document.getElementById("salesEndDate");
@@ -85,6 +88,8 @@ const salesSport = document.getElementById("salesSport");
 const salesSportSort = document.getElementById("salesSportSort");
 const salesLoadButton = document.getElementById("salesLoadButton");
 const salesStatus = document.getElementById("salesStatus");
+const salesSummary = document.getElementById("salesSummary");
+const salesSportChart = document.getElementById("salesSportChart");
 const salesResults = document.getElementById("salesResults");
 const marketHeatDays = document.getElementById("marketHeatDays");
 const marketHeatSport = document.getElementById("marketHeatSport");
@@ -118,8 +123,52 @@ const marketHeatState = {
   playerInsights: Object.create(null),
 };
 
+const REVIEW_CARD_STORAGE_KEY = "cardLister.review.cardId";
+const REVIEW_OVERLAY_STORAGE_KEY = "cardLister.review.open";
+
+function readUiStorage(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeUiStorage(key, value) {
+  try {
+    if (value == null || value === "") {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, String(value));
+  } catch {}
+}
+
+function rememberReviewCard(cardId) {
+  writeUiStorage(REVIEW_CARD_STORAGE_KEY, cardId || null);
+}
+
+function shouldRestoreReviewOverlay() {
+  return readUiStorage(REVIEW_OVERLAY_STORAGE_KEY) === "1";
+}
+
+function setReviewOverlayRestore(value) {
+  writeUiStorage(REVIEW_OVERLAY_STORAGE_KEY, value ? "1" : null);
+}
+
+function openReviewOverlay() {
+  reviewOverlay.style.display = "flex";
+  setReviewOverlayRestore(true);
+}
+
+function inferGradingCompanyFromGrade(value) {
+  const raw = String(value || "").trim();
+  const match = /^(PSA|BGS|SGC|CGC|CSG|BVG|BCCG|HGA)\b/i.exec(raw);
+  return match ? match[1].toUpperCase() : "";
+}
+
 let state = { batches: [], cardItems: [] };
-let reviewState = { cardId: null, details: null };
+let reviewState = { cardId: readUiStorage(REVIEW_CARD_STORAGE_KEY) || null, details: null };
 
 let driveState = {
   connected: false, configured: false, folderId: "", pairs: [], unmatched: [], selected: new Set(),
@@ -335,6 +384,27 @@ function formatCompSourceLabel(source) {
   return source || "unknown";
 }
 
+function normalizeReviewIdentityText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function reviewListingLooksStale(card = {}) {
+  const haystack = normalizeReviewIdentityText(
+    `${card.ebayTitle || ""} ${card.ebayDescription || ""} ${JSON.stringify(card.ebaySpecifics || {})}`,
+  );
+  if (!haystack) return true;
+  const playerTokens = normalizeReviewIdentityText(card.candidatePlayer || card.playerName || "")
+    .split(" ")
+    .filter((token) => token.length > 2);
+  if (playerTokens.length && !playerTokens.some((token) => haystack.includes(token))) {
+    return true;
+  }
+  return false;
+}
+
 function renderCompList(title, comps, emptyLabel, cardId, excludedIds, maxItems = 50) {
   const allRows = Array.isArray(comps) ? comps : [];
   const rows = allRows.slice(0, maxItems);
@@ -383,9 +453,6 @@ function renderReviewSummary(detail) {
   const pe = card.pricingEvidence || {};
   const excludedIds = new Set(card.excludedCompIds || []);
   const soldComps = Array.isArray(externalSoldComps) ? externalSoldComps : [];
-  const recentCardSightSales = Array.isArray(detail.cardHedgeRecentSales)
-    ? detail.cardHedgeRecentSales
-    : [];
   const activeComps = Array.isArray(stateComps)
     ? stateComps.filter((c) => c.source === "browse_active")
     : [];
@@ -399,81 +466,32 @@ function renderReviewSummary(detail) {
   if (pe.soldAnchor != null) weightLines.push(`Sold anchor: ${money(pe.soldAnchor)}`);
   if (pe.soldMedian != null) weightLines.push(`Sold median: ${money(pe.soldMedian)} · P25: ${money(pe.soldP25)}`);
   if (pe.activeMedian != null) weightLines.push(`Active median: ${money(pe.activeMedian)} · P25: ${money(pe.activeP25)} · floor: ${money(pe.activeFloor)}`);
-  const cardHedgeMatch = card.cardhedgeMatch || null;
-  const cardHedgeMatchWarning = card.cardhedgeMatchWarning || null;
-  const cardHedgePricingSummary = card.cardhedgePricingSummary || null;
-  const cardHedgeMatchDetails = cardHedgeMatch
-    ? [
-        cardHedgeMatch.description || null,
-        cardHedgeMatch.cardId ? `ID: ${cardHedgeMatch.cardId}` : null,
-        cardHedgeMatch.confidence != null ? `Conf: ${Math.round(cardHedgeMatch.confidence * 100)}%` : null,
-        cardHedgeMatch.score != null ? `Score: ${Number(cardHedgeMatch.score).toFixed(2)}` : null,
-        cardHedgeMatch.matchedVia ? `Via: ${cardHedgeMatch.matchedVia}` : null,
-      ].filter(Boolean).join(" · ")
-    : null;
-  const cardHedgePricingDetails = cardHedgePricingSummary
-    ? [
-        cardHedgePricingSummary.requestedGrade
-          ? `Grade: ${cardHedgePricingSummary.requestedGrade}`
-          : null,
-        cardHedgePricingSummary.compPrice != null
-          ? `Comp: ${money(cardHedgePricingSummary.compPrice)}`
-          : null,
-        cardHedgePricingSummary.low != null
-          ? `Low: ${money(cardHedgePricingSummary.low)}`
-          : null,
-        cardHedgePricingSummary.high != null
-          ? `High: ${money(cardHedgePricingSummary.high)}`
-          : null,
-        cardHedgePricingSummary.countUsed != null
-          ? `Used: ${cardHedgePricingSummary.countUsed}`
-          : null,
-        cardHedgePricingSummary.countRequested != null
-          ? `Requested: ${cardHedgePricingSummary.countRequested}`
-          : null,
-      ].filter(Boolean).join(" · ")
-    : null;
-  const isCardSightSource = String(card.externalCompSource || "").toLowerCase().startsWith("cardhedge");
   const isApifySource = String(card.compMatchProvider || card.externalCompSource || "").toLowerCase() === "apify";
-  const isCardSightFallback =
-    isCardSightSource &&
-    (
-      cardHedgeMatch?.matchedVia === "card-search" ||
-      String(cardHedgeMatchWarning || "").toLowerCase().includes("fallback")
-    );
-  const cardHedgeExactComps = isCardSightSource && !isCardSightFallback ? soldComps : [];
-  const cardHedgeFallbackComps = isCardSightSource && isCardSightFallback ? soldComps : [];
-  const otherSoldComps = !isCardSightSource ? soldComps : [];
   const batch = state.batches.find((b) => b.id === card.batchId);
+  const gradedSummary = [
+    card.candidateGrade ? `Grade: ${card.candidateGrade}` : null,
+    card.gradingCompany ? `Grader: ${card.gradingCompany}` : null,
+    card.certificationNumber ? `Cert #: ${card.certificationNumber}` : null,
+  ].filter(Boolean).join(" · ");
   const lines = [
     `${card.id} · Batch: ${card.batchId}${batch ? ` (${batch.source})` : ""}`,
     `${card.candidatePlayer || "Unknown"} · ${card.candidateYear || "----"} · ${card.candidateSetName || "Unknown set"} · ${card.candidateCardNumber || "?"}`,
     `Price: ${card.recommendedPrice == null ? "n/a" : `$${card.recommendedPrice.toFixed(2)}`} · Confidence: ${Math.round((card.confidenceScore || 0) * 100)}%`,
-    `Status: ${card.status || "n/a"} · Market: ${card.marketDataSource || "n/a"} · Comp source: ${formatCompSourceLabel(card.compMatchProvider || card.externalCompSource)} · Identity OCR: ${card.identityProvider || card.ocrProvider || "n/a"}`,
+    `Status: ${card.status || "n/a"} · Market: ${card.marketDataSource || "n/a"} · Identity OCR: ${card.identityProvider || card.ocrProvider || "n/a"}`,
+    ...(card.identityDisagreement
+      ? [`⚠ DISAGREEMENT — ${card.identityDisagreement.field}: Ximilar says "${card.identityDisagreement.ximilar}", OpenAI says "${card.identityDisagreement.openai}". Verify before approving.`]
+      : []),
     `Base: ${card.candidateBaseHint ? "Yes" : "No"} · Auto: ${card.candidateAutoHint ? "Yes" : "No"} · Rookie: ${rookieModeFromCard(card)} · Parallel: ${card.candidateParallel || "n/a"}`,
     `Print run: ${card.printRun || "n/a"}${card.serialNumber ? ` · Serial: ${card.serialNumber}` : ""} · Parallel source: ${card.parallelProvider || "n/a"} · Comp grade: ${card.compGradeOverride || "Auto detect"} · Comp match: ${card.compMatchMode || "auto"}`,
-    isApifySource
-      ? `Sold comps: ${soldCount} · Apify sold comps: ${soldCount} · Active: ${activeCount}`
-      : `Sold comps: ${soldCount} · CardSight exact: ${cardHedgeExactComps.length} · CardSight fallback: ${cardHedgeFallbackComps.length} · Active: ${activeCount}`,
+    gradedSummary || "Grade: n/a",
+    `Sold comps: ${soldCount} · Active: ${activeCount}`,
     ...(isApifySource && card.apifySearchQuery ? [`Apify query: ${card.apifySearchQuery}`] : []),
-    ...(cardHedgeMatchDetails ? [`CardSight match: ${cardHedgeMatchDetails}`] : []),
-    ...(cardHedgePricingDetails ? [`CardSight pricing: ${cardHedgePricingDetails}`] : []),
-    ...(cardHedgeMatchWarning ? [`CardSight warning: ${cardHedgeMatchWarning}`] : []),
     ...(weightLines.length ? [`Pricing: ${weightLines.join(" · ")}`] : []),
     ...(card.pricingReason ? [`Reason: ${card.pricingReason}`] : []),
   ];
   reviewSummary.textContent = lines.join("\n");
   reviewPricingEvidence.innerHTML = `
-    ${cardHedgeExactComps.length
-      ? renderCompList("CardSight exact sold comps", cardHedgeExactComps, "No exact CardSight comps stored.", card.id, excludedIds, 50)
-      : ""}
-    ${cardHedgeFallbackComps.length
-      ? renderCompList("CardSight fallback sold comps", cardHedgeFallbackComps, "No fallback CardSight comps stored.", card.id, excludedIds, 50)
-      : ""}
-    ${otherSoldComps.length
-      ? renderCompList("Sold comps pulled", otherSoldComps, "No sold comps stored.", card.id, excludedIds, 50)
-      : ""}
-    ${renderCompList("Recent CardSight sales", recentCardSightSales, "No recent CardSight sales loaded.", null, null, 12)}
+    ${renderCompList("Sold comps pulled", soldComps, "No sold comps stored.", card.id, excludedIds, 50)}
     ${renderCompList("Active listings pulled", activeComps, "No active listings stored.", card.id, excludedIds, 50)}
   `;
 }
@@ -484,11 +502,15 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
     renderReviewSummary(null);
     return;
   }
+  reviewDescription.value = "";
+  ebayListingTitle.value = "";
+  ebaySpecifics.innerHTML = `<div class="muted">Loading eBay preview...</div>`;
   const detail = await api(`/api/card-items/${cardId}`);
   detail.cardHedgeRecentSales = Array.isArray(detail.cardHedgeRecentSales)
     ? detail.cardHedgeRecentSales
     : [];
   reviewState.cardId = cardId;
+  rememberReviewCard(cardId);
   reviewState.details = detail;
   const { card, images } = detail;
   const el = document.getElementById("reviewImages");
@@ -509,6 +531,8 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewRookieMode.value = rookieModeFromCard(card);
   reviewPrintRun.value = card.printRun || "";
   reviewSerialNumber.value = card.serialNumber || "";
+  reviewGradingCompany.value = card.gradingCompany || inferGradingCompanyFromGrade(card.candidateGrade);
+  reviewCertificationNumber.value = card.certificationNumber || "";
   if (reviewCompGradeOverride) reviewCompGradeOverride.value = card.compGradeOverride || "";
   if (reviewCompMatchMode) reviewCompMatchMode.value = card.compMatchMode || "auto";
   reviewBaseHint.checked = Boolean(card.candidateBaseHint);
@@ -516,8 +540,9 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewThickCard.checked = Boolean(card.isThickCard);
   reviewGrade.value = card.candidateGrade || "";
   reviewNotes.value = card.notes || "";
-  reviewDescription.value = card.ebayDescription || "";
-  ebayListingTitle.value = card.ebayTitle || "";
+  const needsFreshPreview = reviewListingLooksStale(card);
+  reviewDescription.value = needsFreshPreview ? "" : card.ebayDescription || "";
+  ebayListingTitle.value = needsFreshPreview ? "" : card.ebayTitle || "";
   ebayListingCondition.value = card.candidateCondition === "graded" ? "LIKE_NEW" : "USED_VERY_GOOD";
   ebayListingPrice.value = card.recommendedPrice ?? "";
   ebayCategoryId.value = card.ebayCategoryId || "";
@@ -533,11 +558,11 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   if (ebayAuctionReservePrice) ebayAuctionReservePrice.value = card.ebayAuctionReservePrice ?? "";
   if (ebayAuctionBuyItNowPrice) ebayAuctionBuyItNowPrice.value = card.ebayAuctionBuyItNowPrice ?? "";
   if (ebayAuctionDuration) ebayAuctionDuration.value = card.ebayAuctionDuration || "DAYS_7";
-  if (card.ebaySpecifics) {
+  if (card.ebaySpecifics && !needsFreshPreview) {
     renderEbaySpecifics(card.ebaySpecifics);
   } else {
     ebaySpecifics.textContent = "Loading eBay preview...";
-    loadEbayPreview(cardId, card);
+    loadEbayPreview(cardId, card, { force: needsFreshPreview });
   }
   deleteOfferFromReviewButton.style.display = detail.offer ? "" : "none";
   if (detail.offer) deleteOfferFromReviewButton.textContent = `Delete offer (${detail.offer.status})`;
@@ -557,6 +582,9 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
 function buildReviewPayload() {
   const grade = reviewGrade.value;
   const rawConditions = ["Near Mint or Better", "Excellent", "Very Good", "Poor"];
+  const gradingCompany = reviewGradingCompany.value.trim();
+  const certificationNumber = reviewCertificationNumber.value.trim();
+  const isGraded = Boolean((grade && !rawConditions.includes(grade)) || gradingCompany || certificationNumber);
   const price = parseFloat(ebayListingPrice.value);
   return {
     playerName: reviewPlayerName.value,
@@ -576,7 +604,10 @@ function buildReviewPayload() {
     autographHint: reviewAutoHint.checked,
     thickCard: reviewThickCard.checked,
     grade: reviewGrade.value,
-    candidateCondition: grade && !rawConditions.includes(grade) ? "graded" : "raw",
+    gradingCompany,
+    certificationNumber,
+    isGraded,
+    candidateCondition: isGraded ? "graded" : "raw",
     recommendedPrice: isNaN(price) || price <= 0 ? undefined : price,
     notes: reviewNotes.value,
   };
@@ -608,6 +639,17 @@ function statusBadge(status) {
       ? "badge warn"
       : status === "error" ? "badge bad" : "badge";
   return `<span class="${cls}">${status}</span>`;
+}
+
+// Ximilar and OpenAI run in parallel on every card as an identity
+// cross-check; when they disagree, ocr.js/pipeline.js records it structurally
+// on card.identityDisagreement instead of only burying it in ocrNotes text —
+// surface it here so a reviewer sees the conflict without opening notes.
+function disagreementBadge(card) {
+  const d = card.identityDisagreement;
+  if (!d) return "";
+  const label = `${d.field}: Ximilar "${d.ximilar}" vs OpenAI "${d.openai}"`;
+  return `<span class="badge bad" title="${label.replace(/"/g, "&quot;")}">⚠ Ximilar/OpenAI disagree</span>`;
 }
 
 function renderBatches() {
@@ -966,21 +1008,144 @@ function sortedSalesSports(sports = []) {
 function salesLineLinks(line = {}) {
   const links = [];
   if (line.sellerOrderUrl) {
-    links.push(`<a class="sales-dashboard-link" href="${salesEscape(line.sellerOrderUrl)}" target="_blank" rel="noopener">Seller Hub</a>`);
+    links.push(`<a class="sales-dashboard-link" href="${salesEscape(line.sellerOrderUrl)}" target="_blank" rel="noopener">Order detail</a>`);
   }
   if (line.itemUrl) {
-    links.push(`<a class="sales-dashboard-link" href="${salesEscape(line.itemUrl)}" target="_blank" rel="noopener">View item</a>`);
+    links.push(`<a class="sales-dashboard-link" href="${salesEscape(line.itemUrl)}" target="_blank" rel="noopener">Original listing</a>`);
   }
   return links.length ? `<span class="sales-line-actions">${links.join("")}</span>` : "";
+}
+
+function salesFilterSummary(data = {}) {
+  const dateRange = data?.dateRange || {};
+  const from = dateRange.startDate || salesStartDate?.value || "";
+  const to = dateRange.endDate || salesEndDate?.value || "";
+  const sport = salesSport?.value || "";
+  let dateLabel = "";
+  if (from && to) {
+    dateLabel = `${from} to ${to}`;
+  } else if (from) {
+    dateLabel = `Since ${from}`;
+  } else if (to) {
+    dateLabel = `Through ${to}`;
+  } else {
+    dateLabel = `Last ${salesDays?.value || "90"} days`;
+  }
+  return {
+    dateLabel,
+    sportLabel: sport ? sport.charAt(0).toUpperCase() + sport.slice(1) : "All sports",
+  };
+}
+
+function renderSalesSummary(summary = {}, data = {}) {
+  if (!salesSummary) return;
+  const filters = salesFilterSummary(data);
+  salesSummary.innerHTML = `
+    <div class="listing-summary-card sales-summary-filters">
+      <span class="listing-summary-label">Active filters</span>
+      <strong>${salesEscape(filters.dateLabel)}</strong>
+      <span class="muted">${salesEscape(filters.sportLabel)}</span>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">All account orders</span>
+      <strong>${summary.totalOrders || 0}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">All account units sold</span>
+      <strong>${summary.totalUnits || 0}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">All account revenue</span>
+      <strong>${formatSalesMoney(summary.totalAmount || 0)}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Matched app-card sales</span>
+      <strong>${summary.matchedUnits || 0} · ${formatSalesMoney(summary.matchedAmount || 0)}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Unmatched account sales</span>
+      <strong>${summary.unmatchedUnits || 0} · ${formatSalesMoney(summary.unmatchedAmount || 0)}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">App cards marked sold</span>
+      <strong>${summary.syncedCards || 0}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">App offers marked sold</span>
+      <strong>${summary.syncedOffers || 0}</strong>
+    </div>
+  `;
+}
+
+function renderSalesSportChart(data = {}) {
+  if (!salesSportChart) return;
+  const breakdown = Array.isArray(data?.sportBreakdown) ? data.sportBreakdown : [];
+  if (!breakdown.length) {
+    salesSportChart.innerHTML = "";
+    return;
+  }
+  const totalRevenue = breakdown.reduce((sum, entry) => sum + (Number(entry.totalAmount) || 0), 0);
+  const palette = ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#6b7280"];
+  let progress = 0;
+  const segments = breakdown.map((entry, index) => {
+    const value = Number(entry.totalAmount) || 0;
+    const share = totalRevenue > 0 ? value / totalRevenue : 0;
+    const start = progress * 360;
+    progress += share;
+    const end = progress * 360;
+    return {
+      ...entry,
+      color: palette[index % palette.length],
+      percent: share * 100,
+      start,
+      end,
+    };
+  });
+  const pieStops = segments
+    .map((entry) => `${entry.color} ${entry.start}deg ${entry.end}deg`)
+    .join(", ");
+  salesSportChart.innerHTML = `
+    <section class="sales-breakdown-card">
+      <div class="sales-breakdown-header">
+        <div>
+          <div class="listing-summary-label">Sales by sport</div>
+          <strong>${formatSalesMoney(totalRevenue)} total revenue</strong>
+        </div>
+        <span class="muted">${segments.reduce((sum, entry) => sum + (entry.quantity || 0), 0)} units sold</span>
+      </div>
+      <div class="sales-breakdown-body">
+        <div class="sales-pie-wrap">
+          <div class="sales-pie-chart" style="--sales-pie:${pieStops || "#d1d5db 0deg 360deg"}"></div>
+        </div>
+        <div class="sales-pie-legend">
+          ${segments.map((entry) => `
+            <div class="sales-pie-row">
+              <span class="sales-pie-swatch" style="background:${entry.color}"></span>
+              <div class="sales-pie-copy">
+                <strong>${salesEscape(entry.sport || "Unmatched")}</strong>
+                <span class="muted">${entry.quantity || 0} units · ${formatSalesMoney(entry.totalAmount || 0)} · ${entry.percent.toFixed(1)}%</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function renderSalesReport(data) {
   if (!salesResults) return;
   const summary = data?.summary || {};
   const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const filters = salesFilterSummary(data);
+  renderSalesSummary(summary, data);
+  renderSalesSportChart(data);
   if (!groups.length) {
     salesResults.innerHTML = `<div class="empty-state">No sales found for this range.</div>`;
     salesStatus.textContent = `No sales found · ${summary.totalOrders || 0} orders`;
+    if (summary.syncedCards || summary.syncedOffers) {
+      salesStatus.textContent += ` · synced ${summary.syncedCards || 0} cards / ${summary.syncedOffers || 0} offers`;
+    }
     return;
   }
   salesResults.innerHTML = groups.map((monthGroup) => `
@@ -997,13 +1162,34 @@ function renderSalesReport(data) {
           <div class="sales-sport-group">
             <h3>${salesEscape(sportGroup.sport || "Unmatched")} <span class="muted">(${sportGroup.quantity || 0} · ${formatSalesMoney(sportGroup.totalAmount || 0)})</span></h3>
             ${sportGroup.cards.map((card) => `
+              ${(() => {
+                const recentLine = [...(Array.isArray(card.lines) ? card.lines : [])]
+                  .sort((a, b) => String(b.soldAt || "").localeCompare(String(a.soldAt || "")))[0] || null;
+                const headerLinks = [];
+                if (recentLine?.sellerOrderUrl) {
+                  headerLinks.push(`<a class="sales-dashboard-link" href="${salesEscape(recentLine.sellerOrderUrl)}" target="_blank" rel="noopener">Latest order</a>`);
+                }
+                if (recentLine?.itemUrl) {
+                  headerLinks.push(`<a class="sales-dashboard-link" href="${salesEscape(recentLine.itemUrl)}" target="_blank" rel="noopener">Latest listing</a>`);
+                }
+                return `
               <div class="sales-card">
-                <div class="sales-card-title">
-                  <div>${salesEscape(card.cardLabel || "Unmatched sale item")}${card.sku ? `<span class="muted"> · ${salesEscape(card.sku)}</span>` : ""}</div>
-                  <div class="muted">${card.quantity || 0} x ${formatSalesMoney(card.totalAmount || 0)}</div>
+                <div class="sales-card-header">
+                  <div class="sales-card-thumb${card.imageUrl ? "" : " sales-card-thumb-empty"}">
+                    ${card.imageUrl
+                      ? `<img src="${salesEscape(card.imageUrl)}" alt="${salesEscape(card.cardLabel || "Sold card")}" loading="lazy" referrerpolicy="no-referrer" />`
+                      : `<span>No image</span>`}
+                  </div>
+                  <div class="sales-card-title">
+                    <div>${salesEscape(card.cardLabel || "Unmatched sale item")}${card.sku ? `<span class="muted"> · ${salesEscape(card.sku)}</span>` : ""}</div>
+                    <div class="muted">${card.quantity || 0} x ${formatSalesMoney(card.totalAmount || 0)}</div>
+                  </div>
                 </div>
                 <div class="sales-card-meta">
-                  ${card.cardId ? `<button class="btn btn-sm btn-outline" data-action="review-sales-card" data-id="${salesEscape(card.cardId)}">Open card</button>` : ""}
+                  <div class="sales-card-meta-actions">
+                    ${card.cardId ? `<button class="btn btn-sm btn-outline" data-action="review-sales-card" data-id="${salesEscape(card.cardId)}">Open card</button>` : ""}
+                    ${headerLinks.join("")}
+                  </div>
                   <span class="muted">Sport: ${salesEscape(card.sport || "Unmatched")}</span>
                 </div>
                 <div class="sales-card-lines">
@@ -1015,21 +1201,49 @@ function renderSalesReport(data) {
                   `).join("")}
                 </div>
               </div>
+            `;
+              })()}
             `).join("")}
           </div>
         `).join("")}
       </div>
     </details>
   `).join("");
-  salesStatus.textContent = `Loaded ${summary.totalOrders || 0} orders · ${summary.totalUnits || 0} units · ${formatSalesMoney(summary.totalAmount || 0)}`
-  const filterText = salesSport?.value ? ` for ${salesSport.value}` : "";
+  salesStatus.textContent = `Loaded ${summary.totalOrders || 0} orders · ${summary.totalUnits || 0} units · ${formatSalesMoney(summary.totalAmount || 0)} · ${filters.dateLabel}`;
+  const filterText = salesSport?.value ? ` · ${filters.sportLabel}` : "";
   salesStatus.textContent += filterText;
   if (salesSportSort?.value) salesStatus.textContent += ` · sorted by ${salesSportSort.options[salesSportSort.selectedIndex]?.text || "sport"}`;
+  if (summary.syncedCards || summary.syncedOffers) {
+    salesStatus.textContent += ` · synced ${summary.syncedCards || 0} cards / ${summary.syncedOffers || 0} offers`;
+  }
+}
+
+function toSalesInputDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function applySalesRangePreset() {
+  if (!salesRangePreset) return;
+  const preset = salesRangePreset.value || "90";
+  if (preset === "custom") return;
+  const days = Math.max(1, Number(preset) || 90);
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - (days - 1));
+  if (salesDays) salesDays.value = String(days);
+  if (salesStartDate) salesStartDate.value = toSalesInputDate(start);
+  if (salesEndDate) salesEndDate.value = toSalesInputDate(end);
 }
 
 async function loadSalesReport() {
   if (!salesResults) return;
   salesStatus.textContent = "Loading sales from eBay...";
+  if (salesSummary) salesSummary.innerHTML = "";
+  if (salesSportChart) salesSportChart.innerHTML = "";
   salesResults.innerHTML = "<div class=\"empty-state\">Loading sales...</div>";
   const params = new URLSearchParams();
   const startDate = salesStartDate?.value || "";
@@ -1042,11 +1256,17 @@ async function loadSalesReport() {
   if (sport) params.set("sport", sport);
   params.set("pageSize", "100");
   params.set("maxPages", "5");
+  params.set("sync", "1");
   params.set("_ts", String(Date.now()));
   try {
     const data = await api(`/api/ebay/sales?${params.toString()}`, { cache: "no-store" });
+    if ((data?.summary?.syncedCards || 0) > 0 || (data?.summary?.syncedOffers || 0) > 0) {
+      await refresh();
+    }
     renderSalesReport(data);
   } catch (error) {
+    if (salesSummary) salesSummary.innerHTML = "";
+    if (salesSportChart) salesSportChart.innerHTML = "";
     salesStatus.textContent = error.message;
     salesResults.innerHTML = `<div class="empty-state">${error.message}</div>`;
   }
@@ -1518,6 +1738,7 @@ function renderCards() {
       </div>
       <div class="card-item-footer">
         ${statusBadge(card.status)}
+        ${disagreementBadge(card)}
         <div class="card-item-actions">
           <button class="btn btn-sm btn-outline" data-action="review-card" data-id="${card.id}">Review</button>
           ${canCreateOffer
@@ -1545,6 +1766,13 @@ async function refresh() {
   state = boot;
   renderBatchSelect();
   renderBatchFilter();
+  if (reviewState.cardId) {
+    const reviewCard = boot.cardItems.find((card) => card.id === reviewState.cardId);
+    if (reviewCard?.batchId) {
+      batchFilter.value = reviewCard.batchId;
+      batchFilter.dataset.selected = reviewCard.batchId;
+    }
+  }
   renderApifyTargetSelect();
   renderReviewCardSelect();
   renderBatches();
@@ -1557,6 +1785,9 @@ async function refresh() {
     try { await loadReviewCard(reviewCardSelect.value); } catch { renderReviewSummary(null); }
   } else {
     renderReviewSummary(null);
+  }
+  if (shouldRestoreReviewOverlay() && reviewState.cardId) {
+    openReviewOverlay();
   }
   serverStatus.textContent = "Connected";
 }
@@ -1657,6 +1888,19 @@ batchFilter.addEventListener("change", () => {
 
 if (salesLoadButton) {
   salesLoadButton.addEventListener("click", loadSalesReport);
+}
+if (salesRangePreset) {
+  salesRangePreset.addEventListener("change", applySalesRangePreset);
+}
+if (salesStartDate) {
+  salesStartDate.addEventListener("change", () => {
+    if (salesRangePreset) salesRangePreset.value = "custom";
+  });
+}
+if (salesEndDate) {
+  salesEndDate.addEventListener("change", () => {
+    if (salesRangePreset) salesRangePreset.value = "custom";
+  });
 }
 if (salesSportSort) {
   salesSportSort.addEventListener("change", loadSalesReport);
@@ -1842,32 +2086,6 @@ driveImportButton.addEventListener("click", async () => {
 loadReviewCardButton.addEventListener("click", async () => {
   try { await loadReviewCard(reviewCardSelect.value); } catch (e) { reviewMessage.textContent = e.message; }
 });
-if (loadRecentCardSightSalesButton) {
-  loadRecentCardSightSalesButton.addEventListener("click", async () => {
-    try {
-      const cardId = reviewCardSelect.value;
-      if (!cardId) throw new Error("Select a card to review.");
-      reviewMessage.textContent = "Loading recent CardSight sales...";
-      const result = await api(`/api/card-items/${cardId}/cardhedge-recent-sales`, { cache: "no-store" });
-      if (!reviewState.details || reviewState.cardId !== cardId) {
-        await loadReviewCard(cardId);
-      }
-      if (reviewState.details) {
-        reviewState.details.cardHedgeRecentSales = Array.isArray(result.sales) ? result.sales : [];
-        if (result.cardMatch) {
-          reviewState.details.card = {
-            ...reviewState.details.card,
-            cardhedgeMatch: result.cardMatch,
-          };
-        }
-        renderReviewSummary(reviewState.details);
-      }
-      reviewMessage.textContent = `Loaded ${result.loadedCount || 0} recent CardSight sales`;
-    } catch (e) {
-      reviewMessage.textContent = e.message;
-    }
-  });
-}
 reviewCardSelect.addEventListener("change", async () => {
   try { await loadReviewCard(reviewCardSelect.value); } catch (e) { reviewMessage.textContent = e.message; }
 });
@@ -1900,9 +2118,12 @@ function renderEbaySpecifics(specifics) {
   ebaySpecifics.innerHTML = `<table>${rows}</table>`;
 }
 
-async function loadEbayPreview(cardId, card) {
+async function loadEbayPreview(cardId, card, options = {}) {
   try {
-    const data = await api(`/api/card-items/${cardId}/ebay-preview`, { method: "POST" });
+    const data = await api(`/api/card-items/${cardId}/ebay-preview`, {
+      method: "POST",
+      body: JSON.stringify({ force: Boolean(options.force) }),
+    });
     ebayListingTitle.value = data.title;
     if (!reviewDescription.value) reviewDescription.value = data.description;
     if (!ebayListingPrice.value || ebayListingPrice.value === "0") ebayListingPrice.value = data.price ?? "";
@@ -1917,7 +2138,7 @@ loadEbayPreviewButton.addEventListener("click", async () => {
   if (!id) { ebayPreviewMessage.textContent = "Select a card first."; return; }
   ebayPreviewMessage.textContent = "Refreshing...";
   reviewDescription.value = "";
-  await loadEbayPreview(id);
+  await loadEbayPreview(id, null, { force: true });
 });
 
 generateReviewDescriptionButton.addEventListener("click", async () => {
@@ -2141,7 +2362,10 @@ ebayListingMode.addEventListener("change", () => {
   applyEbayListingMode(ebayListingMode.value === "auction" ? "AUCTION" : "FIXED_PRICE");
 });
 
-function closeReview() { document.getElementById("reviewOverlay").style.display = "none"; }
+function closeReview() {
+  reviewOverlay.style.display = "none";
+  setReviewOverlayRestore(false);
+}
 closeReviewButton.addEventListener("click", closeReview);
 
 exportStateButton.addEventListener("click", async () => {
@@ -2246,7 +2470,7 @@ document.addEventListener("click", async (event) => {
       renderReviewCardSelect();
       reviewCardSelect.value = id;
       await loadReviewCard(id);
-      document.getElementById("reviewOverlay").style.display = "flex";
+      openReviewOverlay();
     }
     return;
   }
@@ -2261,7 +2485,7 @@ document.addEventListener("click", async (event) => {
     }
     reviewCardSelect.value = id;
     await loadReviewCard(id);
-    document.getElementById("reviewOverlay").style.display = "flex";
+    openReviewOverlay();
     return;
   }
 
@@ -2323,7 +2547,7 @@ document.addEventListener("click", async (event) => {
       }
       reviewCardSelect.value = id;
       await loadReviewCard(id);
-      document.getElementById("reviewOverlay").style.display = "flex";
+      openReviewOverlay();
     }
     if (action === "review-sales-card") {
       const card = state.cardItems.find((c) => c.id === id);
@@ -2334,7 +2558,7 @@ document.addEventListener("click", async (event) => {
       }
       reviewCardSelect.value = id;
       await loadReviewCard(id);
-      document.getElementById("reviewOverlay").style.display = "flex";
+      openReviewOverlay();
     }
     if (action === "manual-cardhedge-reprice") {
       const listingId = button.dataset.listingId || "";
@@ -2435,6 +2659,7 @@ document.addEventListener("change", async (event) => {
 document.getElementById("progressCloseButton").addEventListener("click", dismissProgress);
 
 /* ── Init ── */
+applySalesRangePreset();
 await refreshDriveStatus();
 await refresh();
 cardRows.appendChild(makeCardRow());

@@ -1,6 +1,24 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  normalize,
+  cleanQueryText,
+  hasExplicitVariantSignals,
+  resolveSearchSetName,
+  setFamilyTokens,
+  parsePrintRunFromSerial,
+  inferParallelHint,
+  numberingSearchToken,
+  derivedPrintRun,
+  rookieSearchTokens,
+  autographSearchTokens,
+  autographTitleMatches,
+  rookieStyleFromMetadata,
+  rookieTitleMatches,
+  parallelMatchesTitle,
+  buildYearFirstParts,
+} from "../lib/card-query.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const browseCachePath = path.join(rootDir, "data", "ebay-browse-cache.json");
@@ -17,6 +35,8 @@ function getConfig() {
     clientSecret: process.env.EBAY_CLIENT_SECRET || "",
     marketplaceId: process.env.EBAY_MARKETPLACE_ID || "EBAY_US",
     categoryId: process.env.EBAY_CATEGORY_ID || "261328",
+    tradingCardGameCategoryId: process.env.EBAY_TCG_CATEGORY_ID || "183454",
+    nonSportTradingCardCategoryId: process.env.EBAY_NONSPORT_TRADING_CARD_CATEGORY_ID || "183050",
   };
 }
 
@@ -38,19 +58,6 @@ async function saveBrowseCache() {
 }
 
 let tokenCache = null;
-
-function normalize(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function cleanQueryText(value) {
-  return String(value || "")
-    .replace(/["'“”]/g, "")
-    .trim();
-}
 
 function isAmbiguousChoiceTitle(value) {
   const title = String(value || "");
@@ -125,62 +132,6 @@ function shouldAllowImageOnlyMatches(metadata = {}) {
   return Boolean(metadata.allowImageOnlyMatches) && !titleHintQuery(metadata);
 }
 
-function hasExplicitVariantSignals(title) {
-  const haystack = normalize(title);
-  if (!haystack) return false;
-  if (/\bbase\b/.test(haystack) || /\bbase card\b/.test(haystack)) return false;
-  return (
-    /(?:tri\s*color|refractor|prizm|prism|wave|holo|atomic|sparkle|shimmer|die cut|diecut|mojo|scope|hyper|ice|gold|silver|blue|green|red|orange|purple|black|pink|aqua|emerald|lava|laser|raywave|stardust|cracked ice|pulsar|finite|numbered)\b/.test(
-      haystack,
-    ) || /\b\d{1,3}\s*\/\s*\d{1,4}\b/.test(haystack)
-  );
-}
-
-function resolveSearchSetName(metadata = {}, parallelValue = null) {
-  const setName = String(metadata.setName || "").trim();
-  const normalizedSet = normalize(setName);
-  const normalizedParallel = normalize(parallelValue || metadata.parallel || "");
-  const wantsChromeStyle = /(refractor|wave|holo|prizm|prism)/.test(normalizedParallel);
-  if (
-    wantsChromeStyle &&
-    /topps/.test(normalizedSet) &&
-    /ufc/.test(normalizedSet) &&
-    !/chrome/.test(normalizedSet)
-  ) {
-    return setName.replace(/topps\s+ufc/i, "Topps Chrome UFC");
-  }
-  return setName;
-}
-
-const SET_IGNORE_WORDS = new Set([
-  "basketball",
-  "baseball",
-  "football",
-  "hockey",
-  "soccer",
-  "ufc",
-  "trading",
-  "cards",
-  "card",
-  "sports",
-  "sport",
-]);
-
-function setFamilyTokens(value) {
-  return normalize(value)
-    .split(" ")
-    .filter((token) => token && !SET_IGNORE_WORDS.has(token) && !/^\d+$/.test(token));
-}
-
-function parsePrintRunFromSerial(value) {
-  const serial = String(value || "");
-  const slashMatch = /\b\d{1,3}\s*\/\s*(\d{1,4})\b/.exec(serial);
-  if (slashMatch) return Number(slashMatch[1]);
-  const ofMatch = /\b\d{1,3}\s*(?:of|out of)\s*(\d{1,4})\b/.exec(serial);
-  if (ofMatch) return Number(ofMatch[1]);
-  return null;
-}
-
 function matchesCoreCardIdentity(title, metadata = {}) {
   const haystack = normalize(title);
   const requiredFields = [metadata.year, metadata.playerName, metadata.cardNumber]
@@ -192,124 +143,6 @@ function matchesCoreCardIdentity(title, metadata = {}) {
   if (!requiredFields.every((field) => haystack.includes(field))) return false;
   const setTokens = setFamilyTokens(metadata.setName);
   return setTokens.length ? setTokens.some((token) => haystack.includes(token)) : true;
-}
-
-function inferParallelHint(metadata = {}) {
-  if (metadata.baseHint) return null;
-  if (metadata.parallel) return null;
-  if (!(metadata.serialNumber || metadata.printRun)) return null;
-  const setName = normalize(metadata.setName || "");
-  if (/(chrome|refractor)/.test(setName)) return "Blue Refractor";
-  if (/optic/.test(setName)) return "Holo";
-  if (/select/.test(setName)) return "Blue";
-  if (/prizm/.test(setName)) return "Silver Prizm";
-  return null;
-}
-
-function numberingSearchToken(metadata = {}) {
-  if (metadata.printRun) return `/${metadata.printRun}`;
-  const serial = String(metadata.serialNumber || "");
-  const run = parsePrintRunFromSerial(serial);
-  if (run != null) return `/${run}`;
-  if (/^\d+$/.test(serial)) return serial;
-  return null;
-}
-
-function derivedPrintRun(metadata = {}) {
-  if (metadata.printRun) return metadata.printRun;
-  return parsePrintRunFromSerial(metadata.serialNumber);
-}
-
-function rookieSearchTokens(metadata = {}) {
-  if (!metadata.rookieFlag) return [];
-  const setName = normalize(metadata.setName || "");
-  const variantLabel = normalize(metadata.variantLabel || "");
-  const isRatedRookieStyle = /rated rookie/.test(variantLabel) || /optic/.test(setName);
-  return isRatedRookieStyle ? ["Rated Rookie", "RC"] : ["Rookie", "RC"];
-}
-
-function autographSearchTokens(metadata = {}) {
-  return metadata.autographFlag ? ["Autograph"] : [];
-}
-
-function rookieStyleFromMetadata(metadata = {}) {
-  const setName = normalize(metadata.setName || "");
-  const variantLabel = normalize(metadata.variantLabel || "");
-  return /rated rookie/.test(variantLabel) || /optic/.test(setName) ? "rated" : "generic";
-}
-
-function rookieTitleMatches(title, metadata = {}) {
-  if (!metadata.rookieFlag) return true;
-  const haystack = normalize(title);
-  const style = rookieStyleFromMetadata(metadata);
-  if (style === "generic" && haystack.includes("rated rookie")) return false;
-  if (style === "rated")
-    return (
-      haystack.includes("rated rookie") ||
-      /\brc\b/.test(haystack) ||
-      haystack.includes("rookie card")
-    );
-  return haystack.includes("rookie") || /\brc\b/.test(haystack);
-}
-
-function autographTitleMatches(title, metadata = {}) {
-  if (!metadata.autographFlag) return true;
-  const haystack = normalize(title);
-  return (
-    /\bautograph\b/.test(haystack) ||
-    /\bsignature\b/.test(haystack) ||
-    /\bsigned\b/.test(haystack) ||
-    /\bauto\b/.test(haystack)
-  );
-}
-
-function buildYearFirstParts(metadata = {}, { includeParallel = true } = {}) {
-  const numberingToken = numberingSearchToken(metadata);
-  return [
-    metadata.year,
-    metadata.playerName,
-    metadata.searchSetName || metadata.setName,
-    metadata.cardNumber,
-    includeParallel ? metadata.parallel : null,
-    numberingToken,
-    ...autographSearchTokens(metadata),
-    ...rookieSearchTokens(metadata),
-  ]
-    .map(cleanQueryText)
-    .filter(Boolean);
-}
-
-function parallelMatchesTitle(title, parallel) {
-  const haystack = normalize(title);
-  const needle = normalize(parallel);
-  if (!needle) return true;
-  if (haystack.includes(needle)) return true;
-  const parts = needle.split(" ").filter(Boolean);
-  if (parts.length > 1 && parts.every((part) => haystack.includes(part))) return true;
-  if (needle.includes("blue refractor")) {
-    return (
-      haystack.includes("blue") &&
-      (haystack.includes("refractor") || haystack.includes("chrome") || haystack.includes("optic"))
-    );
-  }
-  if (needle.includes("blue wave")) {
-    return haystack.includes("blue") && haystack.includes("wave");
-  }
-  if (needle.includes("silver prizm") || needle.includes("silver prism")) {
-    return (
-      haystack.includes("silver") && (haystack.includes("prizm") || haystack.includes("prism"))
-    );
-  }
-  if (needle.includes("holo")) {
-    return haystack.includes("holo") || (haystack.includes("optic") && haystack.includes("silver"));
-  }
-  if (needle.includes("gold")) {
-    return haystack.includes("gold");
-  }
-  if (needle.includes("tri") && needle.includes("color")) {
-    return haystack.includes("tri") && haystack.includes("color");
-  }
-  return false;
 }
 
 function scoreTitle(title, metadata) {
@@ -648,7 +481,34 @@ function minScoreForMetadata(metadata) {
   return 4;
 }
 
-function buildFindingCompletedItemsUrl(keywords, limit) {
+function resolveBrowseCategoryId(metadata = {}) {
+  const config = getConfig();
+  const haystack = normalize([
+    metadata.sport,
+    metadata.candidateSport,
+    metadata.setName,
+    metadata.titleHint,
+    metadata.playerName,
+    metadata.ebayTitle,
+    metadata.title,
+    metadata.notes,
+  ]
+    .filter(Boolean)
+    .join(" "));
+  if (!haystack) return config.categoryId;
+  if (/\b(wwe|wwf|wrestling|aew|wcw|ufc|mma|mixed martial)\b/.test(haystack)) {
+    return config.categoryId;
+  }
+  if (/\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon)\b/.test(haystack)) {
+    return config.tradingCardGameCategoryId || null;
+  }
+  if (/\b(star wars|marvel|dc|garbage pail|non sport|non-sport|trading cards)\b/.test(haystack)) {
+    return config.nonSportTradingCardCategoryId || null;
+  }
+  return config.categoryId;
+}
+
+function buildFindingCompletedItemsUrl(keywords, limit, categoryId = null) {
   const config = getConfig();
   const url = new URL("https://svcs.ebay.com/services/search/FindingService/v1");
   url.searchParams.set("OPERATION-NAME", "findCompletedItems");
@@ -658,7 +518,7 @@ function buildFindingCompletedItemsUrl(keywords, limit) {
   url.searchParams.set("REST-PAYLOAD", "true");
   url.searchParams.set("GLOBAL-ID", "EBAY-US");
   url.searchParams.set("keywords", keywords);
-  url.searchParams.set("categoryId", config.categoryId);
+  if (categoryId) url.searchParams.set("categoryId", categoryId);
   url.searchParams.set("paginationInput.entriesPerPage", String(limit));
   url.searchParams.set("sortOrder", "EndTimeSoonest");
   url.searchParams.set("itemFilter(0).name", "SoldItemsOnly");
@@ -666,13 +526,13 @@ function buildFindingCompletedItemsUrl(keywords, limit) {
   return url;
 }
 
-async function findingRequest(keywords, limit) {
+async function findingRequest(keywords, limit, categoryId = null) {
   const config = getConfig();
   if (!config.clientId) {
     throw new Error("Missing EBAY_CLIENT_ID");
   }
 
-  const url = buildFindingCompletedItemsUrl(keywords, limit);
+  const url = buildFindingCompletedItemsUrl(keywords, limit, categoryId);
   const response = await fetch(url, {
     headers: {
       Accept: "application/json",
@@ -683,6 +543,16 @@ async function findingRequest(keywords, limit) {
     throw new Error(`eBay Finding API request failed (${response.status}).`);
   }
   return payload;
+}
+
+function isTradingCardBrowseCategory(categoryId) {
+  const raw = String(categoryId || "").trim();
+  const config = getConfig();
+  return Boolean(
+    raw &&
+      (raw === String(config.tradingCardGameCategoryId || "").trim() ||
+        raw === String(config.nonSportTradingCardCategoryId || "").trim()),
+  );
 }
 
 function firstArrayValue(value) {
@@ -738,12 +608,13 @@ export async function searchEbayListings({
     metadata.fastMode ? 15 : 1,
     Math.min(Number(process.env.EBAY_BROWSE_ACTIVE_COUNT || 50), metadata.fastMode ? 25 : 50),
   );
+  const categoryId = resolveBrowseCategoryId(metadata);
   const searches = [];
   const keywordQueries = buildKeywordQueries(metadata);
   for (const keywordQuery of keywordQueries) {
     const searchUrl = new URL("/buy/browse/v1/item_summary/search", getConfig().baseUrl);
     searchUrl.searchParams.set("q", keywordQuery);
-    searchUrl.searchParams.set("category_ids", getConfig().categoryId);
+    if (categoryId) searchUrl.searchParams.set("category_ids", categoryId);
     searchUrl.searchParams.set("limit", String(resultLimit));
     searchUrl.searchParams.set("sort", "price");
     const conditionFilter = metadata.gradedFlag ? "conditionIds:{2750}" : "conditionIds:{4000}";
@@ -865,14 +736,18 @@ export async function searchEbaySoldListings({
     : await searchEbayListings({ metadata, frontImagePath, backImagePath, imageUrl });
   const queries = buildSoldCompQueries(metadata, activeMatches);
   if (!queries.length) return [];
+  const categoryId = resolveBrowseCategoryId(metadata);
+  const categoryVariants = isTradingCardBrowseCategory(categoryId) ? [categoryId, null] : [categoryId];
 
   const settled = await Promise.allSettled(
-    queries.map(async (query) => {
-      const payload = await findingRequest(query, resultLimit);
-      const items =
-        payload?.findCompletedItemsResponse?.[0]?.searchResult?.[0]?.item || [];
-      return (Array.isArray(items) ? items : []).map((item) => toBrowseSoldItem(item, metadata));
-    }),
+    queries.flatMap((query) =>
+      categoryVariants.map(async (categoryVariant) => {
+        const payload = await findingRequest(query, resultLimit, categoryVariant);
+        const items =
+          payload?.findCompletedItemsResponse?.[0]?.searchResult?.[0]?.item || [];
+        return (Array.isArray(items) ? items : []).map((item) => toBrowseSoldItem(item, metadata));
+      }),
+    ),
   );
 
   const soldListingKey = (listing) =>
@@ -929,6 +804,100 @@ function extractBrowseListedAt(payload = {}) {
     payload.listingStartDate ||
     null
   );
+}
+
+function normalizeBrowseImageUrls(...values) {
+  const urls = [];
+  const push = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) push(entry);
+      return;
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) urls.push(trimmed);
+      return;
+    }
+    if (typeof value === "object") {
+      push(value.imageUrl);
+      push(value.href);
+    }
+  };
+  for (const value of values) push(value);
+  return [...new Set(urls)];
+}
+
+function extractBrowseImageData(payload = {}) {
+  const imageUrls = normalizeBrowseImageUrls(
+    payload.image,
+    payload.additionalImages,
+    payload.thumbnailImages,
+    payload.image?.additionalImages,
+  );
+  return {
+    imageUrl: imageUrls[0] || null,
+    imageUrls,
+  };
+}
+
+function extractBrowseSport(payload = {}) {
+  const aspectSport = Array.isArray(payload.localizedAspects)
+    ? payload.localizedAspects.find((aspect) => normalize(aspect?.name) === "sport")?.value
+    : null;
+  const aspectLeague = Array.isArray(payload.localizedAspects)
+    ? payload.localizedAspects.find((aspect) => normalize(aspect?.name) === "league")?.value
+    : null;
+  const haystack = normalize([
+    aspectSport,
+    aspectLeague,
+    payload.title,
+    payload.subtitle,
+    payload.shortDescription,
+    payload.description,
+    payload.categoryPath,
+    ...(Array.isArray(payload.categories)
+      ? payload.categories.map((category) => category?.categoryName || category?.name || "")
+      : []),
+    ...(Array.isArray(payload.localizedAspects)
+      ? payload.localizedAspects.flatMap((aspect) => [aspect?.name || "", aspect?.value || ""])
+      : []),
+  ].filter(Boolean).join(" "));
+  if (!haystack) return null;
+  if (/\b(basketball|nba|hoops)\b/.test(haystack)) return "Basketball";
+  if (/\b(football|nfl|gridiron)\b/.test(haystack)) return "Football";
+  if (/\b(baseball|mlb|bowman)\b/.test(haystack)) return "Baseball";
+  if (/\b(soccer|fifa|uefa|premier league|mls|serie a|la liga|bundesliga)\b/.test(haystack)) {
+    return "Soccer";
+  }
+  if (/\b(hockey|nhl|upper deck hockey|o pee chee|opc)\b/.test(haystack)) return "Hockey";
+  if (/\b(ufc|mma|mixed martial)\b/.test(haystack)) return "MMA";
+  if (
+    /\b(trading card|non sport|non-sport|pokemon|magic|mtg|yugioh|yu gi oh|star wars|lorcana|one piece|digimon)\b/.test(
+      haystack,
+    )
+  ) {
+    return "Trading Cards";
+  }
+  return null;
+}
+
+function extractHtmlSport(html = "") {
+  const raw = String(html || "");
+  if (!raw) return null;
+  const sportPatterns = [
+    { sport: "Basketball", regexes: [/Sport\s*Basketball/i, /Sport[^A-Za-z]{0,40}Basketball/i, /National Basketball Association|\bNBA\b/i] },
+    { sport: "Baseball", regexes: [/Sport\s*Baseball/i, /Sport[^A-Za-z]{0,40}Baseball/i, /Major League Baseball|\bMLB\b/i] },
+    { sport: "Football", regexes: [/Sport\s*Football/i, /Sport[^A-Za-z]{0,40}Football/i, /National Football League|\bNFL\b/i] },
+    { sport: "Soccer", regexes: [/Sport\s*Soccer/i, /Sport[^A-Za-z]{0,40}Soccer/i, /FIFA|UEFA|Premier League|Bundesliga|La Liga|Serie A|MLS/i] },
+    { sport: "Hockey", regexes: [/Sport\s*Hockey/i, /Sport[^A-Za-z]{0,40}Hockey/i, /National Hockey League|\bNHL\b/i] },
+    { sport: "MMA", regexes: [/Sport\s*UFC/i, /Sport[^A-Za-z]{0,40}UFC/i, /\bUFC\b|Mixed Martial Arts|\bMMA\b/i] },
+    { sport: "Trading Cards", regexes: [/Non-?Sport Trading Card/i, /Trading Card Game/i, /Pok[eé]mon/i, /\bMagic\b|\bMTG\b/i, /Yu-?Gi-?Oh/i, /Star Wars/i, /Lorcana/i, /One Piece/i, /Digimon/i] },
+  ];
+  for (const candidate of sportPatterns) {
+    if (candidate.regexes.some((regex) => regex.test(raw))) return candidate.sport;
+  }
+  return null;
 }
 
 const EBAY_MONTH_INDEX = {
@@ -1018,6 +987,32 @@ async function fetchListingPageListedAt(legacyItemId) {
   return null;
 }
 
+async function fetchListingPageImageData(legacyItemId) {
+  const response = await fetch(`https://www.ebay.com/itm/${legacyItemId}`, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    },
+  });
+  if (!response.ok) return { imageUrl: null, imageUrls: [], sport: null };
+  const html = await response.text();
+  const imageUrls = normalizeBrowseImageUrls(
+    [...html.matchAll(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/gi)].map(
+      (match) => match?.[1] || "",
+    ),
+    [...html.matchAll(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/gi)].map(
+      (match) => match?.[1] || "",
+    ),
+  );
+  return {
+    imageUrl: imageUrls[0] || null,
+    imageUrls,
+    sport: extractHtmlSport(html),
+  };
+}
+
 export async function fetchBrowseListingDatesByLegacyId(legacyItemIds = []) {
   const ids = [...new Set((Array.isArray(legacyItemIds) ? legacyItemIds : [])
     .map(normalizeLegacyItemId)
@@ -1061,10 +1056,91 @@ export async function fetchBrowseListingDatesByLegacyId(legacyItemIds = []) {
       if (entry.status === "fulfilled") {
         const { id, listedAt } = entry.value;
         cache[id] = {
+          ...(cache[id] || {}),
           listedAt: listedAt || null,
           fetchedAt: new Date().toISOString(),
         };
         result[id] = listedAt || null;
+      }
+    }
+  }
+
+  await saveBrowseCache();
+  return result;
+}
+
+export async function fetchBrowseListingImagesByLegacyId(legacyItemIds = []) {
+  const ids = [...new Set((Array.isArray(legacyItemIds) ? legacyItemIds : [])
+    .map(normalizeLegacyItemId)
+    .filter(Boolean))];
+  if (!ids.length) return {};
+
+  const cache = await loadBrowseCache();
+  const result = {};
+  const pending = [];
+  for (const id of ids) {
+    const cached = cache[id];
+    if (
+      cached &&
+      Object.prototype.hasOwnProperty.call(cached, "imageUrl") &&
+      cached.sport
+    ) {
+      result[id] = {
+        imageUrl: cached.imageUrl || null,
+        imageUrls: Array.isArray(cached.imageUrls) ? cached.imageUrls : [],
+        sport: cached.sport || null,
+      };
+    } else {
+      pending.push(id);
+    }
+  }
+
+  if (!pending.length) return result;
+
+  const concurrency = 8;
+  for (let index = 0; index < pending.length; index += concurrency) {
+    const batch = pending.slice(index, index + concurrency);
+    const settled = await Promise.allSettled(
+      batch.map(async (id) => {
+        const payload = await request(
+          `/buy/browse/v1/item/get_item_by_legacy_id?${new URLSearchParams({
+            legacy_item_id: id,
+          }).toString()}`,
+          { marketplaceId: getConfig().marketplaceId },
+        );
+        const browseImageData = extractBrowseImageData(payload);
+        const browseSport = extractBrowseSport(payload);
+        const fallbackPageData = browseImageData.imageUrl && browseSport
+          ? { imageUrl: browseImageData.imageUrl, imageUrls: browseImageData.imageUrls, sport: browseSport }
+          : await fetchListingPageImageData(id);
+        return {
+          id,
+          imageUrl: browseImageData.imageUrl || fallbackPageData.imageUrl || null,
+          imageUrls: Array.isArray(browseImageData.imageUrls) && browseImageData.imageUrls.length
+            ? browseImageData.imageUrls
+            : Array.isArray(fallbackPageData.imageUrls)
+              ? fallbackPageData.imageUrls
+              : [],
+          sport: browseSport || fallbackPageData.sport || null,
+        };
+      }),
+    );
+
+    for (const entry of settled) {
+      if (entry.status === "fulfilled") {
+        const { id, imageUrl, imageUrls, sport } = entry.value;
+        cache[id] = {
+          ...(cache[id] || {}),
+          imageUrl: imageUrl || null,
+          imageUrls: Array.isArray(imageUrls) ? imageUrls : [],
+          sport: sport || null,
+          fetchedAt: new Date().toISOString(),
+        };
+        result[id] = {
+          imageUrl: imageUrl || null,
+          imageUrls: Array.isArray(imageUrls) ? imageUrls : [],
+          sport: sport || null,
+        };
       }
     }
   }

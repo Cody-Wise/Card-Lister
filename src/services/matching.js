@@ -1,11 +1,5 @@
 import { catalog } from "../data/seed.js";
-
-function normalize(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
+import { normalize } from "../lib/card-query.js";
 
 function scoreMatch(card, metadata) {
   let score = 0;

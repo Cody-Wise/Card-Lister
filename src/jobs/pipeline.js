@@ -3,7 +3,7 @@ import { matchCardIdentity } from "../services/matching.js";
 import { getLiveCardComps } from "../services/comps.js";
 import { buildApifyLookupKey, hasApifyConfig, searchApifySoldListings } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
-import { createAuditEvent, createId, nowIso, withState } from "../lib/store.js";
+import { createAuditEvent, createId, nowIso, withState, withStateReadOnly } from "../lib/store.js";
 
 function dedupeComps(comps) {
   const seen = new Set();
@@ -396,6 +396,15 @@ function inferSportFromEbayTitle(title) {
   if (/\b(nfl|football)\b/.test(haystack)) return "football";
   if (/\b(mlb|baseball|bowman)\b/.test(haystack)) return "baseball";
   if (/\b(soccer|premier league|fifa|uefa|mls)\b/.test(haystack)) return "soccer";
+  if (/\b(wwe|wwf|wrestling|aew|wcw)\b/.test(haystack)) return "wrestling";
+  if (/\b(ufc|mma|mixed martial)\b/.test(haystack)) return "mma";
+  if (
+    /\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc)\b/.test(
+      haystack,
+    )
+  ) {
+    return "trading cards";
+  }
   return null;
 }
 
@@ -581,14 +590,43 @@ function mergeDetectedMetadata(preserved, heuristic, ebay) {
   };
 }
 
-async function processCardItemInState(state, cardItemId) {
+// Reads everything processCardItemInState needs to run. Runs under a
+// read-only state lock (no write, no I/O), so it releases the lock
+// immediately. The card item is shallow-cloned so downstream computation
+// mutates a detached object rather than the live state reference.
+function readCardSnapshot(state, cardItemId) {
   const cardItem = state.cardItems.find((item) => item.id === cardItemId);
   if (!cardItem) {
     throw new Error(`Card item not found: ${cardItemId}`);
   }
-
   const frontImage = state.cardImages.find((image) => image.id === cardItem.frontImageId);
   const backImage = state.cardImages.find((image) => image.id === cardItem.backImageId);
+  const offers = state.offers.filter((offer) => offer.cardItemId === cardItemId);
+  return { cardItem: { ...cardItem }, frontImage, backImage, offers };
+}
+
+// Runs OCR, Apify, and eBay Browse comp lookups and computes the full set of
+// card-field updates and pricing. Does NOT hold the state lock, so this is
+// where all the slow network I/O actually happens — many cards can run this
+// concurrently. Operates on a detached `cardItem` clone (from
+// readCardSnapshot), so it's safe to mutate freely without touching live
+// state. Returns the computed card fields plus any keys that were deleted
+// from it (e.g. `delete cardItem.apifyError`), since writeCardResult needs to
+// replay those deletions onto the live object.
+//
+// Known trade-off: this runs on a snapshot taken before the network calls, so
+// if a user edits this same card (e.g. review overrides, excluded comps)
+// while it's mid-flight, that edit can be silently overwritten when the
+// result is merged back in writeCardResult. writeCardResult re-derives
+// publish status against fresh data specifically because that's the highest-
+// value, most reachable case (see the comment there) — this broader class of
+// edit-during-processing races is accepted as a known limitation rather than
+// solved generically here.
+async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backImage, offers }) {
+  const cardItem = { ...snapshotCardItem };
+  const originalKeys = new Set(Object.keys(cardItem));
+  const cardItemId = cardItem.id;
+
   const titleMetadata = inferMetadataFromTitle(cardItem.ebayTitle || cardItem.title || "", {
     provider: "existing_title",
     notesPrefix: "Existing listing title",
@@ -634,7 +672,14 @@ async function processCardItemInState(state, cardItemId) {
       ? Boolean(cardItem.candidateBaseHint)
       : Boolean(trustedTitleMetadata && !trustedTitleMetadata.parallel),
     grade: useSavedValue("candidateGrade") ? cardItem.candidateGrade || null : null,
-    gradedFlag: useSavedValue("candidateGrade") ? cardItem.candidateCondition === "graded" : false,
+    gradedFlag:
+      useSavedValue("candidateGrade") ||
+      useSavedValue("gradingCompany") ||
+      useSavedValue("certificationNumber")
+        ? cardItem.candidateCondition === "graded"
+        : false,
+    gradingCompany: useSavedValue("gradingCompany") ? cardItem.gradingCompany || null : null,
+    certificationNumber: useSavedValue("certificationNumber") ? cardItem.certificationNumber || null : null,
     compGradeOverride: cardItem.compGradeOverride || null,
     compMatchMode: cardItem.compMatchMode || "auto",
     rookieFlag: useSavedValue("candidateRookieFlag")
@@ -653,7 +698,6 @@ async function processCardItemInState(state, cardItemId) {
   };
   let mergedOcr = mergeDetectedMetadata(preserved, heuristic, null);
   let match = matchCardIdentity(mergedOcr);
-  const offers = state.offers.filter((offer) => offer.cardItemId === cardItemId);
   const existingSoldComps = Array.isArray(cardItem.externalSoldComps) ? cardItem.externalSoldComps : [];
   let apifySoldComps = existingSoldComps;
   const apifyLookupKey = buildApifyLookupKey(mergedOcr);
@@ -737,6 +781,8 @@ async function processCardItemInState(state, cardItemId) {
   cardItem.candidateAutoHint = Boolean(mergedOcr.autographFlag);
   cardItem.candidateGrade = mergedOcr.grade;
   cardItem.candidateCondition = mergedOcr.gradedFlag ? "graded" : "raw";
+  cardItem.gradingCompany = mergedOcr.gradingCompany || null;
+  cardItem.certificationNumber = mergedOcr.certificationNumber || null;
   cardItem.candidateRookieFlag = Boolean(mergedOcr.rookieFlag);
   cardItem.candidateVariantLabel = mergedOcr.variantLabel || null;
   cardItem.candidateTeam = mergedOcr.team || null;
@@ -804,6 +850,7 @@ async function processCardItemInState(state, cardItemId) {
   cardItem.parallelProvider = mergedOcr.parallelProvider || null;
   cardItem.compMatchProvider = cardItem.externalCompSource || null;
   cardItem.ocrNotes = mergedOcr.notes;
+  cardItem.identityDisagreement = mergedOcr.verificationDisagreement || null;
   if (isCardEffectivelyPublished(cardItem, offers)) {
     cardItem.status = "listed";
     cardItem.publishState = "published";
@@ -836,69 +883,123 @@ async function processCardItemInState(state, cardItemId) {
   }
   cardItem.updatedAt = nowIso();
 
-  state.comps = state.comps.filter((comp) => comp.cardItemId !== cardItemId);
-  for (const comp of [...comps.sold, ...comps.active]) {
-    state.comps.push({
-      id: createId(state, "comp"),
-      cardItemId,
-      source: comp.kind === "sold" ? comp.source : "browse_active",
-      listingId: comp.id,
-      title: comp.title,
-      conditionLabel: comp.conditionLabel,
-      salePrice: comp.salePrice ?? null,
-      shippingPrice: comp.shippingPrice ?? null,
-      totalPrice: comp.totalPrice ?? comp.price ?? null,
-      soldAt: comp.soldAt ?? null,
-      url: comp.url ?? null,
-      matchScore: comp.matchScore ?? null,
-      rawPayload: comp,
-      createdAt: nowIso(),
+  const deletedKeys = [...originalKeys].filter((key) => !(key in cardItem));
+  return { cardItem, comps, deletedKeys };
+}
+
+// Persists a computed result back onto the card. Does no network I/O; runs
+// under the state lock just long enough to merge fields, rebuild the comps
+// table, and write the audit event.
+async function writeCardResult(cardItemId, result) {
+  return withState(async (state) => {
+    const cardItem = state.cardItems.find((item) => item.id === cardItemId);
+    if (!cardItem) {
+      throw new Error(`Card item not found: ${cardItemId}`);
+    }
+    Object.assign(cardItem, result.cardItem);
+    for (const key of result.deletedKeys) {
+      delete cardItem[key];
+    }
+
+    // computeCardResult ran unlocked and may have decided status/publishState
+    // from an `offers` snapshot that's now stale (e.g. this card was published
+    // while OCR/comp lookups were in flight). Re-derive against FRESH offers
+    // here so a concurrent publish can't be clobbered back to
+    // priced/needs_review by a stale computation. isCardEffectivelyPublished
+    // took first priority in the original single-locked function too.
+    const freshOffers = state.offers.filter((offer) => offer.cardItemId === cardItemId);
+    if (isCardEffectivelyPublished(cardItem, freshOffers)) {
+      cardItem.status = "listed";
+      cardItem.publishState = "published";
+    }
+
+    state.comps = state.comps.filter((comp) => comp.cardItemId !== cardItemId);
+    for (const comp of [...result.comps.sold, ...result.comps.active]) {
+      state.comps.push({
+        id: createId(state, "comp"),
+        cardItemId,
+        source: comp.kind === "sold" ? comp.source : "browse_active",
+        listingId: comp.id,
+        title: comp.title,
+        conditionLabel: comp.conditionLabel,
+        salePrice: comp.salePrice ?? null,
+        shippingPrice: comp.shippingPrice ?? null,
+        totalPrice: comp.totalPrice ?? comp.price ?? null,
+        soldAt: comp.soldAt ?? null,
+        url: comp.url ?? null,
+        matchScore: comp.matchScore ?? null,
+        rawPayload: comp,
+        createdAt: nowIso(),
+      });
+    }
+
+    createAuditEvent(state, "cardItem", cardItemId, "processed", {
+      confidence: cardItem.confidenceScore,
+      canonicalCardId: cardItem.canonicalCardId,
+      recommendedPrice: cardItem.recommendedPrice,
     });
-  }
 
-  createAuditEvent(state, "cardItem", cardItemId, "processed", {
-    confidence: cardItem.confidenceScore,
-    canonicalCardId: cardItem.canonicalCardId,
-    recommendedPrice: cardItem.recommendedPrice,
+    return cardItem;
   });
-
-  return cardItem;
 }
 
 export async function processCardItem(cardItemId) {
-  return withState(async (state) => processCardItemInState(state, cardItemId));
+  const snapshot = await withStateReadOnly(async (state) => readCardSnapshot(state, cardItemId));
+  const result = await computeCardResult(snapshot);
+  return writeCardResult(cardItemId, result);
 }
 
 export async function processBatch(batchId) {
-  return withState(async (state) => {
+  const cardIds = await withState(async (state) => {
     const batch = state.batches.find((entry) => entry.id === batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
-
     batch.status = "processing";
     batch.updatedAt = nowIso();
+    return state.cardItems.filter((item) => item.batchId === batchId).map((item) => item.id);
+  });
 
-    const cardItems = state.cardItems.filter((item) => item.batchId === batchId);
-    const concurrency = Math.max(
-      1,
-      Math.min(4, Number.parseInt(process.env.CARD_PROCESS_CONCURRENCY || "3", 10) || 3),
-    );
-    await runWithConcurrency(cardItems, concurrency, async (item) => {
-      await processCardItemInState(state, item.id);
+  const concurrency = Math.max(
+    1,
+    Math.min(4, Number.parseInt(process.env.CARD_PROCESS_CONCURRENCY || "3", 10) || 3),
+  );
+
+  // batch.status = "processing" was already committed above as its own write,
+  // so — unlike the original single-locked version, where an uncaught error
+  // here would roll back that write too — a per-card failure would otherwise
+  // leave the batch permanently stuck at "processing" with no automatic
+  // recovery. Catch it, still finalize the batch from whatever cards did
+  // complete, then re-throw so the caller sees the same failure it always did
+  // (the route handler has no try/catch and relies on this propagating to the
+  // top-level 500 handler).
+  let processingError = null;
+  try {
+    await runWithConcurrency(cardIds, concurrency, async (cardItemId) => {
+      await processCardItem(cardItemId);
       await sleep(150);
     });
+  } catch (error) {
+    processingError = error;
+  }
 
+  const finalizedBatch = await withState(async (state) => {
+    const batch = state.batches.find((entry) => entry.id === batchId);
+    if (!batch) throw new Error(`Batch not found: ${batchId}`);
     const refreshed = state.cardItems.filter((item) => item.batchId === batchId);
     const allReady = refreshed.every((item) =>
       item.status === "priced" || item.status === "ready" || item.status === "listed",
     );
-    batch.status = allReady ? "ready_to_publish" : "needs_review";
+    batch.status = processingError ? "needs_review" : allReady ? "ready_to_publish" : "needs_review";
     batch.updatedAt = nowIso();
 
     createAuditEvent(state, "batch", batchId, "processed", {
-      cardCount: cardItems.length,
+      cardCount: cardIds.length,
       ready: allReady,
+      error: processingError ? processingError.message : undefined,
     });
 
     return batch;
   });
+
+  if (processingError) throw processingError;
+  return finalizedBatch;
 }

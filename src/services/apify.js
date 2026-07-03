@@ -4,7 +4,39 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nowIso } from "../lib/store.js";
 import { getCacheEntry, upsertCacheEntry, hasSupabaseConfig } from "../lib/supabase.js";
+import {
+  normalize,
+  cleanQueryText,
+  hasExplicitVariantSignals,
+  resolveSearchSetName,
+  setFamilyTokens,
+  parsePrintRunFromSerial,
+  inferParallelHint,
+  numberingSearchToken,
+  derivedPrintRun,
+  autographSearchTokens,
+  autographTitleMatches,
+  rookieStyleFromMetadata,
+  rookieTitleMatches,
+  parallelMatchesTitle,
+  buildYearFirstParts,
+} from "../lib/card-query.js";
 
+// Naming note for anyone new to this file: sold-comp/pricing lookups went
+// through three generations — CardHedge (original integration, still the
+// live provider in production today: CARDHEDGE_API_KEY/CARDHEDGE_API_BASE_URL
+// point at the real api.cardhedger.com) -> CardSight (an in-progress rename
+// that was never actually deployed — CARDSIGHT_* env vars are read as an
+// alias everywhere CARDHEDGE_* is, but are unset in production, so they're
+// currently dead code paths, not a second live provider) -> Apify (the
+// preferred path today for new sold-comp ingestion; see hasApifyConfig()
+// call sites). Function names below still carry the "CardSight" branding
+// from the unfinished rename. Deliberately NOT doing a mechanical rename
+// here: a real fix means picking one clear name for the shared abstraction
+// (arguably neither "CardHedge" nor "CardSight", since Apify is now
+// preferred) and is better done alongside splitting this file up (see
+// README's "Known rough edges" / src/app.js size) rather than as a
+// find-replace against a name that's itself borrowed from a specific vendor.
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const marketHeatCachePath = path.join(rootDir, "data", "market-heat-cache.json");
 const MARKET_HEAT_REFRESH_MS = Number(
@@ -245,78 +277,9 @@ const MARKET_HEAT_SPORTS = {
   },
 };
 
-function normalize(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function cleanQueryText(value) {
-  return String(value || "")
-    .replace(/["'“”]/g, "")
-    .trim();
-}
-
-function hasExplicitVariantSignals(title) {
-  const haystack = normalize(title);
-  if (!haystack) return false;
-  if (/\bbase\b/.test(haystack) || /\bbase card\b/.test(haystack)) return false;
-  return (
-    /(?:tri\s*color|refractor|prizm|prism|wave|holo|atomic|sparkle|shimmer|die cut|diecut|mojo|scope|hyper|ice|gold|silver|blue|green|red|orange|purple|black|pink|aqua|emerald|lava|laser|raywave|stardust|cracked ice|pulsar|finite|numbered)\b/.test(
-      haystack,
-    ) || /\b\d{1,3}\s*\/\s*\d{1,4}\b/.test(haystack)
-  );
-}
-
-function resolveSearchSetName(metadata = {}, parallelValue = null) {
-  const setName = String(metadata.setName || "").trim();
-  const normalizedSet = normalize(setName);
-  const normalizedParallel = normalize(parallelValue || metadata.parallel || "");
-  const wantsChromeStyle = /(refractor|wave|holo|prizm|prism)/.test(normalizedParallel);
-  if (
-    wantsChromeStyle &&
-    /topps/.test(normalizedSet) &&
-    /ufc/.test(normalizedSet) &&
-    !/chrome/.test(normalizedSet)
-  ) {
-    return setName.replace(/topps\s+ufc/i, "Topps Chrome UFC");
-  }
-  return setName;
-}
-
-const SET_IGNORE_WORDS = new Set([
-  "basketball",
-  "baseball",
-  "football",
-  "hockey",
-  "soccer",
-  "ufc",
-  "trading",
-  "cards",
-  "card",
-  "sports",
-  "sport",
-]);
-
-function setFamilyTokens(value) {
-  return normalize(value)
-    .split(" ")
-    .filter((token) => token && !SET_IGNORE_WORDS.has(token) && !/^\d+$/.test(token));
-}
-
 function toNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parsePrintRunFromSerial(value) {
-  const serial = String(value || "");
-  const slashMatch = /\b\d{1,3}\s*\/\s*(\d{1,4})\b/.exec(serial);
-  if (slashMatch) return Number(slashMatch[1]);
-  const ofMatch = /\b\d{1,3}\s*(?:of|out of)\s*(\d{1,4})\b/.exec(serial);
-  if (ofMatch) return Number(ofMatch[1]);
-  return null;
 }
 
 function titleText(row) {
@@ -334,121 +297,6 @@ function matchesCoreCardIdentity(title, metadata = {}, keyword = "") {
   if (metadata.parallel && parallelMatchesTitle(haystack, metadata.parallel)) return true;
   if (metadata.cardNumber && haystack.includes(normalize(metadata.cardNumber))) return true;
   return setTokens.length ? setTokens.some((token) => haystack.includes(token)) : true;
-}
-
-function buildYearFirstParts(metadata = {}, { includeParallel = true } = {}) {
-  const numberingToken = numberingSearchToken(metadata);
-  return [
-    metadata.year,
-    metadata.playerName,
-    metadata.searchSetName || metadata.setName,
-    metadata.cardNumber,
-    includeParallel ? metadata.parallel : null,
-    numberingToken,
-    ...autographSearchTokens(metadata),
-    ...(metadata.rookieFlag
-      ? /rated rookie/.test(normalize(metadata.variantLabel || "")) ||
-        /optic/.test(normalize(metadata.setName || ""))
-        ? ["Rated Rookie", "RC"]
-        : ["Rookie", "RC"]
-      : []),
-  ]
-    .map(cleanQueryText)
-    .filter(Boolean);
-}
-
-function rookieStyleFromMetadata(metadata = {}) {
-  const setName = normalize(metadata.setName || "");
-  const variantLabel = normalize(metadata.variantLabel || "");
-  return /rated rookie/.test(variantLabel) || /optic/.test(setName) ? "rated" : "generic";
-}
-
-function rookieTitleMatches(title, metadata = {}) {
-  if (!metadata.rookieFlag) return true;
-  const haystack = normalize(title);
-  const style = rookieStyleFromMetadata(metadata);
-  if (style === "generic" && haystack.includes("rated rookie")) return false;
-  if (style === "rated")
-    return (
-      haystack.includes("rated rookie") ||
-      /\brc\b/.test(haystack) ||
-      haystack.includes("rookie card")
-    );
-  return haystack.includes("rookie") || /\brc\b/.test(haystack);
-}
-
-function parallelMatchesTitle(title, parallel) {
-  const haystack = normalize(title);
-  const needle = normalize(parallel);
-  if (!needle) return true;
-  if (haystack.includes(needle)) return true;
-  const parts = needle.split(" ").filter(Boolean);
-  if (parts.length > 1 && parts.every((part) => haystack.includes(part))) return true;
-  if (needle.includes("blue refractor")) {
-    return (
-      haystack.includes("blue") &&
-      (haystack.includes("refractor") || haystack.includes("chrome") || haystack.includes("optic"))
-    );
-  }
-  if (needle.includes("blue wave")) {
-    return haystack.includes("blue") && haystack.includes("wave");
-  }
-  if (needle.includes("silver prizm") || needle.includes("silver prism")) {
-    return (
-      haystack.includes("silver") && (haystack.includes("prizm") || haystack.includes("prism"))
-    );
-  }
-  if (needle.includes("holo")) {
-    return haystack.includes("holo") || (haystack.includes("optic") && haystack.includes("silver"));
-  }
-  if (needle.includes("gold")) {
-    return haystack.includes("gold");
-  }
-  if (needle.includes("tri") && needle.includes("color")) {
-    return haystack.includes("tri") && haystack.includes("color");
-  }
-  return false;
-}
-
-function inferParallelHint(metadata = {}) {
-  if (metadata.baseHint) return null;
-  if (metadata.parallel) return null;
-  if (!(metadata.serialNumber || metadata.printRun)) return null;
-  const setName = normalize(metadata.setName || "");
-  if (/(chrome|refractor)/.test(setName)) return "Blue Refractor";
-  if (/optic/.test(setName)) return "Holo";
-  if (/select/.test(setName)) return "Blue";
-  if (/prizm/.test(setName)) return "Silver Prizm";
-  return null;
-}
-
-function numberingSearchToken(metadata = {}) {
-  if (metadata.printRun) return `/${metadata.printRun}`;
-  const serial = String(metadata.serialNumber || "");
-  const run = parsePrintRunFromSerial(serial);
-  if (run != null) return `/${run}`;
-  if (/^\d+$/.test(serial)) return serial;
-  return null;
-}
-
-function derivedPrintRun(metadata = {}) {
-  if (metadata.printRun) return metadata.printRun;
-  return parsePrintRunFromSerial(metadata.serialNumber);
-}
-
-function autographSearchTokens(metadata = {}) {
-  return metadata.autographFlag ? ["Autograph"] : [];
-}
-
-function autographTitleMatches(title, metadata = {}) {
-  if (!metadata.autographFlag) return true;
-  const haystack = normalize(title);
-  return (
-    /\bautograph\b/.test(haystack) ||
-    /\bsignature\b/.test(haystack) ||
-    /\bsigned\b/.test(haystack) ||
-    /\bauto\b/.test(haystack)
-  );
 }
 
 function scoreListing(row, metadata = {}) {
@@ -776,6 +624,37 @@ function getCompDataProvider() {
   }
   if (getApifyConfig().token) return "apify";
   return getCardHedgeConfig().apiKey ? "cardhedge" : "apify";
+}
+
+function shouldForceApifyProvider(metadata = {}) {
+  const explicit = String(metadata.compDataProvider || metadata.provider || "").toLowerCase().trim();
+  if (explicit === "apify") return true;
+  const haystack = normalize(
+    [
+      metadata.sport,
+      metadata.candidateSport,
+      metadata.setName,
+      metadata.titleHint,
+      metadata.playerName,
+      metadata.ebayTitle,
+      metadata.title,
+      metadata.notes,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  return /\b(trading cards|pokemon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/.test(
+    haystack,
+  );
+}
+
+function resolveApifySoldCount(metadata = {}) {
+  const configuredCount = clampPositiveInt(
+    Number(process.env.APIFY_EBAY_SOLD_COUNT || 10),
+    10,
+    100,
+  );
+  return shouldForceApifyProvider(metadata) ? Math.max(configuredCount, 15) : configuredCount;
 }
 
 function getMarketHeatProvider() {
@@ -2318,7 +2197,8 @@ export async function loadRecentCardHedgeSales(metadata = {}, { count = 8 } = {}
 
 export async function searchApifySoldListings(metadata = {}) {
   const config = getApifyConfig();
-  const provider = getCompDataProvider();
+  const provider = shouldForceApifyProvider(metadata) ? "apify" : getCompDataProvider();
+  const requestedCount = resolveApifySoldCount(metadata);
 
   if (provider === "cardhedge") {
     try {
@@ -2361,11 +2241,11 @@ export async function searchApifySoldListings(metadata = {}) {
     const input = {
       keywords: [keyword],
       daysToScrape: config.daysToScrape,
-      count: config.count,
+      count: requestedCount,
       ebaySite: config.ebaySite,
       sortOrder: config.sortOrder,
       itemLocation: config.itemLocation,
-      itemCondition: metadata.gradedFlag ? "any" : "used",
+      itemCondition: shouldForceApifyProvider(metadata) || metadata.gradedFlag ? "any" : "used",
     };
 
     const response = await fetch(
@@ -2412,7 +2292,7 @@ export async function searchApifySoldListings(metadata = {}) {
   const comps = dedupeListings(parsedRuns.flatMap((entry) => entry.comps)).sort(
     (a, b) => b.matchScore - a.matchScore || a.totalPrice - b.totalPrice,
   );
-  const limit = Math.max(1, Math.min(config.count, 10));
+  const limit = requestedCount;
   const rejectedCount = parsedRuns.reduce((sum, entry) => sum + (entry.rejectedCount || 0), 0);
   return {
     source: "apify",

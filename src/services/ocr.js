@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { catalog } from "../data/seed.js";
+import { hasXimilarConfig, identifyCardWithXimilar, identifyTcgCardWithXimilar } from "./ximilar.js";
 
 const execFileAsync = promisify(execFile);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -45,13 +46,20 @@ function titleCase(value) {
 function guessCatalogMatch(haystack) {
   let best = null;
   for (const card of catalog) {
-    let score = 0;
+    let aliasScore = 0;
     for (const alias of card.aliases) {
-      if (haystack.includes(normalizeText(alias))) score += 2;
+      if (haystack.includes(normalizeText(alias))) aliasScore += 2;
     }
+    // A bare year or card-number coincidence (e.g. any other 2023 card) isn't
+    // enough signal on its own — require an actual alias/name hit before
+    // considering this a real catalog match. Without this, real uploaded
+    // cards that happen to share a year with a demo seed-catalog entry could
+    // get silently misidentified as that unrelated demo card.
+    if (aliasScore === 0) continue;
+    let score = aliasScore;
     if (haystack.includes(String(card.year))) score += 1;
     if (haystack.includes(normalizeText(card.cardNumber))) score += 1;
-    if (score > 0 && (!best || score > best.score)) {
+    if (!best || score > best.score) {
       best = { card, score };
     }
   }
@@ -319,8 +327,27 @@ function buildHeuristicMetadata({
   const gradeMatch = /(psa\s*\d{1,2}|sgc\s*\d{1,2}|bgs\s*\d{1,2}(?:\.5)?|cgc\s*\d{1,2})/i.exec(
     haystack,
   );
+  const slabGradeMatch = /\b(gem mt|pristine|mint|near mint(?:-mint)?|authentic)\s*(10|9(?:\.5)?|8(?:\.5)?|7(?:\.5)?|6|5|4|3|2|1)\b/i.exec(
+    haystack,
+  );
+  const gradingCompanyMatch = /\b(PSA|SGC|BGS|CGC|CSG|BVG|BCCG|HGA)\b/i.exec(frontText || rawText);
+  const gradingCompany =
+    chosen?.gradingCompany ||
+    (gradeMatch ? String(gradeMatch[1]).split(/\s+/)[0].toUpperCase() : null) ||
+    (gradingCompanyMatch ? gradingCompanyMatch[1].toUpperCase() : null);
   const grade =
-    chosen?.grade || (gradeMatch ? gradeMatch[1].toUpperCase().replace(/\s+/g, " ") : null);
+    chosen?.grade ||
+    (gradeMatch ? gradeMatch[1].toUpperCase().replace(/\s+/g, " ") : null) ||
+    (gradingCompany && slabGradeMatch ? `${gradingCompany} ${slabGradeMatch[2]}` : null);
+  const certificationNumber =
+    chosen?.certificationNumber ||
+    (String(frontText || "")
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .find((line) => /\b(psa|sgc|bgs|cgc|csg|bvg|bccg|hga|gem mt|mint|pristine)\b/i.test(line))
+      ?.match(/\b(\d{6,10})\b/) || null)?.[1] ||
+    (String(frontText || rawText).match(/\b(?:psa|sgc|bgs|cgc|csg|bvg|bccg|hga)\b[\s\S]{0,80}?\b(\d{6,10})\b/i) || null)?.[1] ||
+    null;
   const rookieFlag = Boolean(
     chosen?.rookieFlag || /rated rookie|\brookie\b|\brc\b/i.test(haystack),
   );
@@ -339,13 +366,19 @@ function buildHeuristicMetadata({
     team: chosen?.team || playerHint?.team || null,
     league: chosen?.league || playerHint?.league || null,
     gradedFlag,
+    gradingCompany,
     grade,
+    certificationNumber,
     serialNumber: serialNumberValue,
     printRun,
     rookieFlag,
     variantLabel,
     autographFlag,
-    confidence: chosen ? 0.9 : playerHint ? 0.72 : 0.45,
+    // A seed-catalog/filename-hint match is a crude text guess, not real
+    // vision recognition — even with an alias hit required (see
+    // guessCatalogMatch), it shouldn't be trusted enough to skip human
+    // review. Keep both below the 0.65 needs_review gate in pipeline.js.
+    confidence: chosen ? 0.6 : playerHint ? 0.55 : 0.45,
     notes: match
       ? `Matched seed catalog card ${chosen.id}`
       : playerHint
@@ -379,6 +412,15 @@ function deriveIdentityProvider(heuristic, { hasSuryaText = false, hasVisionText
 }
 
 function normalizeOpenAIResult(result) {
+  const gradingCompany = result.gradingCompany || null;
+  const grade = result.grade || null;
+  const certificationNumber = result.certificationNumber || null;
+  const gradedFlag = Boolean(
+    result.gradedFlag ||
+    gradingCompany ||
+    certificationNumber ||
+    (grade && !["Near Mint or Better", "Excellent", "Very Good", "Poor"].includes(String(grade).trim())),
+  );
   return {
     playerName: result.playerName || null,
     year: result.year ?? null,
@@ -388,8 +430,10 @@ function normalizeOpenAIResult(result) {
     sport: result.sport || null,
     team: result.team || null,
     league: result.league || null,
-    gradedFlag: Boolean(result.gradedFlag),
-    grade: result.grade || null,
+    gradedFlag,
+    gradingCompany,
+    grade,
+    certificationNumber,
     serialNumber: result.serialNumber || null,
     printRun: result.printRun ?? null,
     rookieFlag: Boolean(result.rookieFlag),
@@ -434,7 +478,9 @@ function mergeVisionMetadata(base, update) {
     sport: update.sport ?? base.sport ?? null,
     team: update.team ?? base.team ?? null,
     league: update.league ?? base.league ?? null,
+    gradingCompany: update.gradingCompany ?? base.gradingCompany ?? null,
     grade: update.grade ?? base.grade ?? null,
+    certificationNumber: update.certificationNumber ?? base.certificationNumber ?? null,
     serialNumber: update.serialNumber ?? base.serialNumber ?? null,
     printRun: update.printRun ?? base.printRun ?? null,
     rookieFlag:
@@ -487,7 +533,7 @@ async function requestOpenAIVision({ imagePath, sideLabel, fileName, prompt }) {
             {
               role: "system",
               content:
-                "You extract sports trading card metadata from a single image. Return only the requested JSON schema. Never invent details. If a field is unclear or not visible, use null.",
+                "You extract trading card metadata from a single image. This can be a sports card, non-sports card, or TCG/CCG card. Return only the requested JSON schema. Never invent details. If a field is unclear or not visible, use null.",
             },
             {
               role: "user",
@@ -501,7 +547,7 @@ async function requestOpenAIVision({ imagePath, sideLabel, fileName, prompt }) {
           text: {
             format: {
               type: "json_schema",
-              name: "sports_card_metadata",
+              name: "trading_card_metadata",
               strict: true,
               schema: {
                 type: "object",
@@ -516,7 +562,9 @@ async function requestOpenAIVision({ imagePath, sideLabel, fileName, prompt }) {
                   team: nullableString,
                   league: nullableString,
                   gradedFlag: { type: "boolean" },
+                  gradingCompany: nullableString,
                   grade: nullableString,
+                  certificationNumber: nullableString,
                   serialNumber: nullableString,
                   printRun: nullableInteger,
                   rookieFlag: { type: "boolean" },
@@ -535,7 +583,9 @@ async function requestOpenAIVision({ imagePath, sideLabel, fileName, prompt }) {
                   "team",
                   "league",
                   "gradedFlag",
+                  "gradingCompany",
                   "grade",
+                  "certificationNumber",
                   "serialNumber",
                   "printRun",
                   "rookieFlag",
@@ -597,7 +647,7 @@ async function requestOpenAIParallelVision({ imagePath, fileName, metadata = {} 
             {
               role: "system",
               content:
-                "You only identify the parallel or variant of a sports trading card image. Do not change player, year, set, or card number. If the parallel is unclear, return null.",
+                "You only identify the parallel or variant of a trading card image. Do not change player, year, set, or card number. If the parallel is unclear, return null.",
             },
             {
               role: "user",
@@ -616,7 +666,7 @@ async function requestOpenAIParallelVision({ imagePath, fileName, metadata = {} 
           text: {
             format: {
               type: "json_schema",
-              name: "sports_card_parallel",
+              name: "trading_card_parallel",
               strict: true,
               schema: {
                 type: "object",
@@ -709,6 +759,91 @@ export async function extractCardMetadata({
     identityProvider,
     parallelProvider: heuristic.parallel ? identityProvider : null,
   };
+
+  // Ximilar is the primary card-identification source whenever it's
+  // configured — set OCR_PROVIDER=openai to force the old OpenAI-vision path
+  // instead (e.g. for comparison). Ximilar identifies from the front image
+  // only and its database-match parallel/sub_set data is unreliable, so the
+  // OpenAI parallel-only probe ALWAYS runs afterward (when configured) as an
+  // independent verification pass, not just a fallback for when Ximilar found
+  // nothing. Agreement is noted; a disagreement is flagged in `notes` and
+  // caps confidence so the existing confidence<0.65 -> needs_review gate
+  // catches it for a human to check, rather than silently picking a winner.
+  const useXimilarPrimary = hasXimilarConfig() && process.env.OCR_PROVIDER !== "openai";
+  if (useXimilarPrimary && frontImagePath) {
+    try {
+      let ximilarResult = await identifyCardWithXimilar({ imagePath: frontImagePath });
+      // sport_id found essentially nothing — this app is sports-card-first,
+      // so there's no upload-time "this is a TCG card" flag to route on.
+      // Instead, treat a weak/empty sport_id result as a signal to try the
+      // separate tcg_id endpoint before giving up (Pokemon/Magic/Yu-Gi-Oh!
+      // etc. won't match anything in the sports catalog, so this only fires
+      // for cards sport_id was never going to identify anyway).
+      if (!ximilarResult.playerName && ximilarResult.confidence < 0.2) {
+        try {
+          const tcgResult = await identifyTcgCardWithXimilar({ imagePath: frontImagePath });
+          if (tcgResult.playerName) ximilarResult = tcgResult;
+        } catch {
+          // Keep the (empty) sport_id result; fall through as before.
+        }
+      }
+      // mergeVisionMetadata already folds update.notes into the merged notes
+      // (base.notes + " | " + update.notes), so no separate append is needed.
+      let merged = mergeVisionMetadata(baseMetadata, ximilarResult);
+      // mergeVisionMetadata's provider field only special-cases "openai"; set
+      // it explicitly here rather than changing that shared logic.
+      merged.provider = "ximilar";
+      const ximilarParallel = merged.parallel;
+      const hadXimilarParallel = !isWeakParallel(ximilarParallel);
+
+      if (allowOpenAIParallel && hasOpenAIConfig()) {
+        try {
+          const parallelProbe = await requestOpenAIParallelVision({
+            imagePath: frontImagePath,
+            fileName: frontFileName,
+            metadata: merged,
+          });
+          const probedParallel = sanitizeParallel(parallelProbe.parallel) || null;
+
+          if (!hadXimilarParallel) {
+            // Ximilar had nothing usable — adopt OpenAI's independent read,
+            // same as before.
+            merged = mergeVisionMetadata(merged, {
+              parallel: probedParallel ?? merged.parallel ?? null,
+              variantLabel: parallelProbe.variantLabel ?? merged.variantLabel ?? null,
+              confidence: parallelProbe.confidence,
+              notes: `OpenAI parallel pass: ${parallelProbe.notes}`,
+            });
+          } else if (probedParallel && normalizeText(probedParallel) === normalizeText(ximilarParallel)) {
+            merged.notes = `${merged.notes} | OpenAI parallel verification: confirmed "${ximilarParallel}"`;
+          } else if (probedParallel) {
+            merged.notes = `${merged.notes} | OpenAI parallel verification MISMATCH: Ximilar="${ximilarParallel}" vs OpenAI="${probedParallel}" — needs review`;
+            merged.confidence = Math.min(merged.confidence, 0.5);
+            // Structured flag so the UI can surface this as a badge instead
+            // of requiring someone to read the notes text.
+            merged.verificationDisagreement = {
+              field: "parallel",
+              ximilar: ximilarParallel,
+              openai: probedParallel,
+            };
+          } else {
+            merged.notes = `${merged.notes} | OpenAI parallel verification: no parallel detected (Ximilar said "${ximilarParallel}")`;
+          }
+          merged.provider = "ximilar";
+        } catch (error) {
+          merged.notes = `${merged.notes} | OpenAI parallel verification fallback: ${error.message}`;
+        }
+      }
+
+      return merged;
+    } catch (error) {
+      return {
+        ...baseMetadata,
+        notes: `${baseMetadata.notes} | Ximilar fallback: ${error.message}`,
+      };
+    }
+  }
+
   if (allowOpenAI && hasOpenAIConfig() && (frontImagePath || backImagePath)) {
     try {
       const requests = [];
@@ -721,7 +856,7 @@ export async function extractCardMetadata({
             sideLabel: "Front",
             fileName: frontFileName,
             prompt:
-              "Focus on the front of the card. Extract the player identity, year, set name, card number, parallel, and any obvious grade, rookie, or autograph markers. Specifically look for Rated Rookie, Rookie Card, RC, autograph, auto, signature, or similar designations if visible.",
+              "Focus on the front of the card. Extract the player identity, year, set name, card number, parallel, and any obvious grade, rookie, autograph, slab grader, or certification label markers. Specifically look for Rated Rookie, Rookie Card, RC, autograph, auto, signature, PSA, BGS, SGC, CGC, CSG, and visible certification numbers if the card is slabbed.",
           }),
         });
       }
@@ -734,7 +869,7 @@ export async function extractCardMetadata({
             sideLabel: "Back",
             fileName: backFileName,
             prompt:
-              "Focus on the back of the card. Extract serial number, print run, exact set or product text, and any confirmatory details.",
+              "Focus on the back of the card. Extract serial number, print run, exact set or product text, and any confirmatory slab details such as grader or certification number if visible.",
           }),
         });
       }

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { buildConditionDescriptors } from "./ebay-condition.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const configPath = path.join(rootDir, "data", "ebay-config.json");
@@ -697,6 +698,8 @@ function getConfig() {
     marketplaceId: runtimeOverrides.marketplaceId || process.env.EBAY_MARKETPLACE_ID || "EBAY_US",
     merchantLocationKey: runtimeOverrides.merchantLocationKey || process.env.EBAY_MERCHANT_LOCATION_KEY || "",
     categoryId: runtimeOverrides.categoryId || process.env.EBAY_CATEGORY_ID || "",
+    tradingCardGameCategoryId: process.env.EBAY_TCG_CATEGORY_ID || "183454",
+    nonSportTradingCardCategoryId: process.env.EBAY_NONSPORT_TRADING_CARD_CATEGORY_ID || "183050",
     paymentPolicyId: runtimeOverrides.paymentPolicyId || process.env.EBAY_PAYMENT_POLICY_ID || "",
     fulfillmentPolicyId:
       runtimeOverrides.fulfillmentPolicyId ||
@@ -790,22 +793,66 @@ function inferBrand(setName) {
   return null;
 }
 
+function inferTradingCardKind(setName, card = {}) {
+  const haystack = String(
+    [
+      card.candidateSport,
+      card.sport,
+      setName,
+      card.candidateSetName,
+      card.ebayTitle,
+      card.candidatePlayer,
+      card.playerName,
+      card.notes,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  ).toLowerCase();
+  if (!haystack) return null;
+  if (/\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon)\b/.test(haystack)) {
+    return "tcg";
+  }
+  if (/\b(star wars|marvel|dc|garbage pail|non sport|non-sport)\b/.test(haystack)) {
+    return "non_sport";
+  }
+  return null;
+}
+
 function inferSport(setName, card) {
   if (card.candidateSport || card.sport) return card.candidateSport || card.sport;
   const key = String(setName || "").toLowerCase();
+  if (/\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/i.test(key)) {
+    return "Trading Cards";
+  }
+  if (/\b(wwe|wwf|wrestling|aew|wcw)\b/i.test(key)) return "Wrestling";
   // Explicit sport-name keywords first
   if (/football|gridiron/i.test(key)) return "Football";
   if (/baseball/i.test(key)) return "Baseball";
   if (/basketball|hoops|court/i.test(key)) return "Basketball";
   if (/hockey/i.test(key)) return "Hockey";
   if (/soccer/i.test(key)) return "Soccer";
-  if (/ufc|mma/i.test(key)) return "UFC";
+  if (/ufc|mma/i.test(key)) return "MMA";
   // Fall back to brand/league keywords
   if (/topps|bowman|donruss|stadium|select/i.test(key)) return "Baseball";
   if (/contenders/i.test(key)) return "Football";
   if (/ud|upper deck/i.test(key)) return "Hockey";
   if (/uefa/i.test(key)) return "Soccer";
   return null;
+}
+
+function resolveCategoryIdForCard(card = {}) {
+  const config = getConfig();
+  if (card.ebayCategoryId) return card.ebayCategoryId;
+  const setName = card.candidateSetName || card.setName;
+  const sport = inferSport(setName, card);
+  if (sport === "Trading Cards") {
+    const kind = inferTradingCardKind(setName, card);
+    if (kind === "tcg") {
+      return config.tradingCardGameCategoryId || config.nonSportTradingCardCategoryId || config.categoryId;
+    }
+    return config.nonSportTradingCardCategoryId || config.tradingCardGameCategoryId || config.categoryId;
+  }
+  return config.categoryId;
 }
 
 function buildEBayTitle(card) {
@@ -877,6 +924,8 @@ async function buildEBayDescription(card) {
   const cardNum = card.candidateCardNumber || card.cardNumber;
   const parallel = card.candidateParallel && card.candidateParallel !== "Base" ? card.candidateParallel : null;
   const grade = card.candidateGrade;
+  const gradingCompany = normalizeGradedField(card.gradingCompany) || inferGradingCompany(grade);
+  const certificationNumber = normalizeGradedField(card.certificationNumber);
   const isAuto = card.candidateAutoHint;
   const isRookie = card.candidateRookieFlag;
   const variantLabel = card.candidateVariantLabel && card.candidateVariantLabel !== "Base" ? card.candidateVariantLabel : null;
@@ -884,10 +933,15 @@ async function buildEBayDescription(card) {
   const rookieLabel = isRatedRookie ? "Rated Rookie" : isRookie ? "Rookie" : null;
   const serial = card.serialNumber;
   const printRun = card.printRun;
-  const isGraded = card.candidateCondition === "graded" || card.gradedFlag;
+  const isGraded =
+    card.candidateCondition === "graded" ||
+    card.gradedFlag ||
+    Boolean(gradingCompany || certificationNumber || (grade && !isRawGradeValue(grade)));
   const sport = inferSport(setName, card);
   const brand = inferBrand(setName);
-  const condition = isGraded && grade ? grade : "Raw / Near Mint-Mint";
+  const condition = isGraded
+    ? [gradingCompany, grade].filter(Boolean).join(" ") || grade || "Graded"
+    : "Raw / Near Mint-Mint";
   const price = card.recommendedPrice;
   const notes = card.notes;
   const yearStr = year ? String(year) : null;
@@ -901,7 +955,9 @@ async function buildEBayDescription(card) {
     rookieLabel ? rookieLabel : null,
     serial ? `Serial Numbered: ${serial}` : null,
     printRun ? `Print Run: ${printRun}` : null,
+    gradingCompany ? `Professional Grader: ${gradingCompany}` : null,
     `Condition: ${condition}`,
+    certificationNumber ? `Certification Number: ${certificationNumber}` : null,
     sport ? `Sport: ${sport}` : null,
     brand ? `Manufacturer: ${brand}` : null,
     notes ? `Notes: ${notes}` : null,
@@ -916,6 +972,11 @@ async function buildEBayDescription(card) {
   try {
     const prompt = [
       "Generate a clean, informative eBay listing description for a sports trading card.",
+      sport === "Trading Cards"
+        ? "Generate a clean, informative eBay listing description for a trading card."
+        : sport === "Wrestling"
+          ? "Generate a clean, informative eBay listing description for a wrestling trading card."
+          : "Generate a clean, informative eBay listing description for a sports trading card.",
       "Include the card identification, condition, and key selling points in plain text paragraphs.",
       "Do not use markdown or HTML. Do not include price, dollar amounts, or any pricing information anywhere in the description. The seller sets the price separately.",
       "Use a professional, helpful tone. Keep it concise (3-5 short paragraphs).",
@@ -928,7 +989,9 @@ async function buildEBayDescription(card) {
       rookieLabel ? `${rookieLabel} card` : null,
       serial ? `Serial #: ${serial}` : null,
       printRun ? `Print run: ${printRun}` : null,
+      gradingCompany ? `Professional grader: ${gradingCompany}` : null,
       `Condition: ${condition}`,
+      certificationNumber ? `Certification #: ${certificationNumber}` : null,
       sport ? `Sport: ${sport}` : null,
       brand ? `Brand: ${brand}` : null,
     ]
@@ -946,7 +1009,7 @@ async function buildEBayDescription(card) {
         input: [
           {
             role: "system",
-            content: "You generate concise, accurate eBay listing descriptions for sports trading cards. Output plain text only. No markdown or HTML. 3-5 short paragraphs. Never include price, dollar amounts, or any pricing information.",
+            content: "You generate concise, accurate eBay listing descriptions for trading cards. Output plain text only. No markdown or HTML. 3-5 short paragraphs. Never include price, dollar amounts, or any pricing information.",
           },
           {
             role: "user",
@@ -985,7 +1048,8 @@ function inferLeague(sport) {
     Basketball: "National Basketball Association (NBA)",
     Hockey: "National Hockey League (NHL)",
     Soccer: "Major League Soccer (MLS)",
-    UFC: "UFC",
+    MMA: "UFC",
+    Wrestling: "WWE",
   };
   return map[sport] || null;
 }
@@ -1000,6 +1064,21 @@ function sanitizeParallel(value) {
   return s || null;
 }
 
+function normalizeGradedField(value) {
+  const raw = String(value || "").trim();
+  return raw || null;
+}
+
+function isRawGradeValue(value = "") {
+  return ["Near Mint or Better", "Excellent", "Very Good", "Poor"].includes(String(value || "").trim());
+}
+
+function inferGradingCompany(value = "") {
+  const raw = String(value || "").trim();
+  const match = /^(PSA|BGS|SGC|CGC|CSG|BVG|BCCG|HGA)\b/i.exec(raw);
+  return match ? match[1].toUpperCase() : null;
+}
+
 function buildItemSpecifics(card) {
   const year = card.candidateYear || card.year;
   const setName = card.candidateSetName || card.setName;
@@ -1008,6 +1087,8 @@ function buildItemSpecifics(card) {
   const rawParallel = card.candidateParallel && card.candidateParallel !== "Base" ? card.candidateParallel : null;
   const parallel = sanitizeParallel(rawParallel);
   const grade = card.candidateGrade;
+  const gradingCompany = normalizeGradedField(card.gradingCompany) || inferGradingCompany(grade);
+  const certificationNumber = normalizeGradedField(card.certificationNumber);
   const isAuto = card.candidateAutoHint;
   const isRookie = card.candidateRookieFlag;
   const rookieLabel = card.candidateVariantLabel?.includes("Rated Rookie") ? "Rated Rookie" : isRookie ? "Yes" : null;
@@ -1017,31 +1098,68 @@ function buildItemSpecifics(card) {
   const rawBrand = card.candidateBrand;
   const brand = rawBrand && rawBrand !== "None" ? rawBrand : inferBrand(setName);
   const condition = card.candidateCondition || "raw";
-  const isGraded = card.candidateCondition === "graded" || card.gradedFlag;
+  const isGraded =
+    card.candidateCondition === "graded" ||
+    card.gradedFlag ||
+    Boolean(gradingCompany || certificationNumber || (grade && !isRawGradeValue(grade)));
   const team = card.candidateTeam || card.team;
   const league = card.candidateLeague || inferLeague(sport);
   const isThick = card.isThick || card.isThickCard;
   const thickLabel = isThick ? "20 Pt." : "Standard";
+  const tradingCardKind = sport === "Trading Cards" ? inferTradingCardKind(setName, card) : null;
+  const tcgGame =
+    tradingCardKind === "tcg"
+      ? (() => {
+          const haystack = String([setName, player, card.ebayTitle, card.notes].filter(Boolean).join(" ")).toLowerCase();
+          if (/\b(pokemon|pok[eé]mon)\b/.test(haystack)) return "Pokémon TCG";
+          if (/\b(magic|mtg)\b/.test(haystack)) return "Magic: The Gathering";
+          if (/\b(yugioh|yu gi oh)\b/.test(haystack)) return "Yu-Gi-Oh!";
+          if (/\blorcana\b/.test(haystack)) return "Disney Lorcana";
+          if (/\bone piece\b/.test(haystack)) return "One Piece CCG";
+          if (/\bdigimon\b/.test(haystack)) return "Digimon Card Game";
+          return null;
+        })()
+      : null;
+  const nonSportFranchise =
+    tradingCardKind === "non_sport"
+      ? (() => {
+          const haystack = String([setName, player, card.ebayTitle, card.notes].filter(Boolean).join(" ")).toLowerCase();
+          if (/\bstar wars\b/.test(haystack)) return "Star Wars";
+          if (/\bmarvel\b/.test(haystack)) return "Marvel";
+          if (/\bdc\b/.test(haystack)) return "DC";
+          return null;
+        })()
+      : null;
 
   const specifics = {};
 
-  if (player) specifics["Player/Athlete"] = [player];
-  if (sport) specifics.Sport = [sport];
-  if (league) specifics.League = [league];
+  if (player) specifics[sport === "Trading Cards" ? "Card Name" : "Player/Athlete"] = [player];
+  if (sport && sport !== "Trading Cards") specifics.Sport = [sport];
+  if (league && sport !== "Trading Cards") specifics.League = [league];
   if (year) specifics.Year = [String(year)];
   if (brand) specifics.Manufacturer = [brand];
   if (setName) specifics.Set = [setName];
   if (cardNum) specifics["Card Number"] = [cardNum];
   if (parallel && parallel !== "None") specifics["Parallel/Variety"] = [parallel];
-  if (team) specifics.Team = [team];
+  if (team && sport !== "Trading Cards") specifics.Team = [team];
+  if (tcgGame) specifics.Game = [tcgGame];
+  if (nonSportFranchise) specifics.Franchise = [nonSportFranchise];
   specifics.Autographed = isAuto ? ["Yes"] : ["No"];
   if (rookieLabel) specifics.Rookie = [rookieLabel];
   if (serial) specifics["Serial Number"] = [serial];
   if (printRun) specifics["Print Run"] = [String(printRun)];
-  if (grade) specifics.Grade = [grade];
   if (isGraded) specifics.Graded = ["Yes"];
+  if (gradingCompany) specifics["Professional Grader"] = [gradingCompany];
+  if (grade) specifics.Grade = [grade];
+  if (certificationNumber) specifics["Certification Number"] = [certificationNumber];
 
-  specifics.Type = ["Sports Trading Card"];
+  specifics.Type = [
+    sport === "Trading Cards"
+      ? tradingCardKind === "tcg"
+        ? "CCG Individual Card"
+        : "Non-Sport Trading Card"
+      : "Sports Trading Card",
+  ];
   specifics["Card Size"] = ["Standard"];
   specifics["Card Thickness"] = [thickLabel];
   specifics.Material = ["Card Stock"];
@@ -1695,7 +1813,10 @@ export async function createInventoryItem(card) {
   const specifics = buildItemSpecifics(card);
   const isGraded = card.candidateCondition === "graded" || card.gradedFlag;
   const conditionDescriptors = isGraded
-    ? []
+    ? buildConditionDescriptors(card, {
+        categoryId: resolveCategoryIdForCard(card),
+        sportsCategoryId: config.categoryId
+      })
     : [
         {
           name: "40001",
@@ -1763,7 +1884,7 @@ async function createLiveOffers(cardItems) {
       marketplaceId: config.marketplaceId,
       format: listingConfig.format,
       bestOfferTerms: normalizeBestOfferTerms(),
-      categoryId: card.ebayCategoryId || config.categoryId,
+      categoryId: resolveCategoryIdForCard(card),
       merchantLocationKey: config.merchantLocationKey,
       countryCode: "US",
       listingDescription: description,
@@ -1892,7 +2013,7 @@ async function updateLiveOfferPrices(offers) {
       marketplaceId: requestPayload.marketplaceId || getConfig().marketplaceId,
       format: listingConfig.format,
       bestOfferTerms: normalizeBestOfferTerms(requestPayload.bestOfferTerms),
-      categoryId: requestPayload.categoryId || getConfig().categoryId,
+      categoryId: requestPayload.categoryId || resolveCategoryIdForCard(offer),
       merchantLocationKey: requestPayload.merchantLocationKey || getConfig().merchantLocationKey,
       listingDescription: offer.ebayDescription || requestPayload.listingDescription || "",
       listingPolicies,
@@ -2118,7 +2239,7 @@ export async function createDraftOffers(cardItems) {
           marketplaceId: getConfig().marketplaceId,
           format: listingConfig.format,
           bestOfferTerms: normalizeBestOfferTerms(),
-          categoryId: item.ebayCategoryId || getConfig().categoryId || null,
+          categoryId: resolveCategoryIdForCard(item) || null,
           countryCode: "US",
           listingDescription: buildDescription(item),
           ...(listingConfig.format === "AUCTION"

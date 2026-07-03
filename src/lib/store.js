@@ -130,6 +130,13 @@ function shouldPreferLocalState(local, remote) {
 let queue = Promise.resolve();
 let pendingSupabaseState = null;
 let supabaseWritePromise = null;
+// Set once this single-instance process has reconciled local vs. Supabase
+// state on its first read. After that, the local file (kept current by every
+// writeState() call) is authoritative for the rest of the process's life, so
+// we skip re-fetching the multi-MB state_snapshots blob from Supabase on
+// every subsequent read — that was the source of near-continuous Supabase/
+// Kong load, since every withState()/withStateReadOnly() call used to hit it.
+let hasHydratedFromSupabase = false;
 
 function withTimeout(promise, ms, label) {
   let timer = null;
@@ -289,6 +296,10 @@ async function readState() {
   if (!hasSupabaseConfig() || process.env.READ_STORE === "local") {
     return local;
   }
+  if (hasHydratedFromSupabase) {
+    return local;
+  }
+  hasHydratedFromSupabase = true;
   try {
     const snapshot = await withTimeout(
       readStateSnapshotFromSupabase(),
@@ -428,7 +439,37 @@ async function writeStateTablesToSupabase(state) {
 async function writeState(state) {
   normalizeState(state);
   await writeStateJson(state);
-  scheduleSupabaseWrite(state);
+  // Synchronous (awaited), not fire-and-forget: withState()'s queue already
+  // serializes every state-mutating call, so this doesn't introduce new
+  // concurrency — it just means a write isn't considered "done" until it's
+  // durably in Supabase too, closing the window where a lost local disk
+  // between a local write and its (previously async) Supabase mirror could
+  // mean that write existed nowhere durable. A Supabase failure/timeout here
+  // is logged, not thrown — the local write already succeeded and callers
+  // shouldn't see a spurious failure for a durability-layer hiccup.
+  if (hasSupabaseConfig()) {
+    const snapshot = cloneState(state);
+    try {
+      await withTimeout(
+        writeStateSnapshotToSupabase(snapshot),
+        SUPABASE_IO_TIMEOUT_MS,
+        "Supabase snapshot write",
+      );
+    } catch (error) {
+      console.error("Supabase snapshot write failed:", error.message);
+    }
+    if (SUPABASE_RELATIONAL_SYNC_ENABLED) {
+      // The relational tables are a supplementary denormalized view, not the
+      // primary snapshot — keep this one fire-and-forget rather than adding
+      // its (typically much larger) per-table diff/upsert cost to every
+      // write's latency.
+      void withTimeout(
+        writeStateTablesToSupabase(snapshot),
+        SUPABASE_FULL_SYNC_TIMEOUT_MS,
+        "Supabase relational sync",
+      ).catch((error) => console.error("Supabase relational sync failed:", error.message));
+    }
+  }
 }
 
 export async function withState(mutator, { readOnly = false } = {}) {

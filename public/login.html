@@ -3,21 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Card Lister — Sign in</title>
+    <title>Bigfoot Boys Command Center — Sign in</title>
+    <link rel="icon" href="/public/logo-badge.png" />
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #0f1117;
-        color: #e4e4e7;
+        background: #08080A;
+        color: #F5F4F0;
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
       }
       .login-card {
-        background: #1a1b23;
-        border: 1px solid #2a2b35;
+        background: #121215;
+        border: 1px solid #2A2A30;
         border-radius: 12px;
         padding: 3rem 2.5rem;
         width: 100%;
@@ -32,18 +33,23 @@
         margin-bottom: 2rem;
       }
       .logo-icon {
-        font-size: 1.8rem;
-        color: #6366f1;
+        width: 40px;
+        height: 40px;
+        display: block;
+        object-fit: contain;
       }
       .logo-text {
         font-size: 1.4rem;
         font-weight: 700;
-        color: #fff;
+        background: linear-gradient(90deg, #FABF01, #FF5A1F, #2F9E73);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
       }
       h1 {
         font-size: 1.1rem;
         font-weight: 500;
-        color: #a1a1aa;
+        color: #9A9AA3;
         margin-bottom: 2rem;
       }
       .google-btn {
@@ -77,8 +83,8 @@
   <body>
     <div class="login-card">
       <div class="logo">
-        <span class="logo-icon">♠</span>
-        <span class="logo-text">CardLister</span>
+        <img class="logo-icon" src="/public/logo-badge.png" alt="Bigfoot Boys Cards" />
+        <span class="logo-text">Bigfoot Boys Command Center</span>
       </div>
       <h1>Sign in to continue</h1>
       <a class="google-btn" href="/auth/google">

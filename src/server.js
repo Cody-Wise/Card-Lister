@@ -36,26 +36,104 @@ process.on("unhandledRejection", (err) => {
 const port = parseNumeric(parseArg("port", process.env.PORT || "3000"), 3000);
 const host = parseArg("host", process.env.HOST || "localhost");
 
+function sendServerError(res, error) {
+  try {
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: error.message }));
+  } catch {
+    console.error("Failed to send error response:", error.message);
+  }
+}
+
 const server = http.createServer((req, res) => {
   try {
-    handler(req, res).catch((error) => {
-      try {
-        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: error.message }));
-      } catch {
-        console.error("Failed to send error response:", error.message);
-      }
-    });
+    handler(req, res).catch((error) => sendServerError(res, error));
   } catch (error) {
-    try {
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: error.message }));
-    } catch {
-      console.error("Failed to send error response:", error.message);
-    }
+    sendServerError(res, error);
   }
 });
 
 server.listen(port, host, () => {
   console.log(`Automatic Sports Card Listing running on http://${host}:${port}`);
 });
+
+// Optional background schedulers. Each is off by default; enable by setting
+// its interval env var to a positive number of minutes. Each can also
+// optionally push its outcome to an Uptime Kuma "Push" monitor (see
+// src/lib/uptime-kuma.js) so a scheduler that stops firing or starts always
+// failing surfaces as an alert instead of only living in `docker logs`.
+const { pingUptimeKuma } = await import("./lib/uptime-kuma.js");
+
+const salesSyncMinutes = Number(process.env.SALES_SYNC_INTERVAL_MINUTES || 0);
+if (Number.isFinite(salesSyncMinutes) && salesSyncMinutes > 0) {
+  const { syncEbaySales } = await import("./jobs/sales-sync.js");
+  const pushUrl = process.env.UPTIME_KUMA_PUSH_URL_SALES_SYNC || "";
+  const runSalesSync = () => {
+    syncEbaySales()
+      .then((result) => {
+        const msg = `${result.totalOrders} orders, ${result.matchedLines} lines matched, ${result.updatedCards} cards / ${result.updatedOffers} offers marked sold`;
+        console.log(`[sales-sync] ${msg}`);
+        pingUptimeKuma(pushUrl, { status: "up", msg });
+      })
+      .catch((error) => {
+        console.error(`[sales-sync] failed: ${error.message}`);
+        pingUptimeKuma(pushUrl, { status: "down", msg: error.message });
+      });
+  };
+  const salesSyncTimer = setInterval(runSalesSync, salesSyncMinutes * 60_000);
+  salesSyncTimer.unref();
+  console.log(`eBay sales sync scheduler enabled every ${salesSyncMinutes} min`);
+}
+
+const repriceMinutes = Number(process.env.REPRICE_INTERVAL_MINUTES || 0);
+if (Number.isFinite(repriceMinutes) && repriceMinutes > 0) {
+  const { repriceUnsoldListings } = await import("./jobs/reprice-scheduler.js");
+  const pushUrl = process.env.UPTIME_KUMA_PUSH_URL_REPRICE || "";
+  const runReprice = () => {
+    repriceUnsoldListings()
+      .then((result) => {
+        const msg = `evaluated ${result.evaluated}, repriced ${result.repriced}, failed ${result.failed}`;
+        console.log(`[reprice] ${msg}`);
+        pingUptimeKuma(pushUrl, { status: result.failed > 0 ? "down" : "up", msg });
+      })
+      .catch((error) => {
+        console.error(`[reprice] failed: ${error.message}`);
+        pingUptimeKuma(pushUrl, { status: "down", msg: error.message });
+      });
+  };
+  const repriceTimer = setInterval(runReprice, repriceMinutes * 60_000);
+  repriceTimer.unref();
+  console.log(`Repricing scheduler enabled every ${repriceMinutes} min`);
+}
+
+const healthCheckMinutes = Number(process.env.DATA_HEALTH_CHECK_INTERVAL_MINUTES || 0);
+if (Number.isFinite(healthCheckMinutes) && healthCheckMinutes > 0) {
+  const { runDataHealthCheck } = await import("./jobs/data-health-check.js");
+  const healthCheckPushUrl = process.env.UPTIME_KUMA_PUSH_URL_DATA_HEALTH_CHECK || "";
+  const runHealthCheck = () => {
+    runDataHealthCheck()
+      .then((result) => {
+        const msg = `checked ${result.checkedCards} cards / ${result.checkedOffers} offers, ${result.issuesFound} issue(s) found`;
+        console.log(`[data-health-check] ${msg}`);
+        for (const issue of result.issues) {
+          console.warn(`[data-health-check] ${issue.type}: ${issue.message}`);
+        }
+        // "down" here means "found data-quality issues worth a look", not
+        // that the check itself failed to run — matches how the other
+        // schedulers report a bad outcome as down even on a clean execution.
+        pingUptimeKuma(healthCheckPushUrl, { status: result.issuesFound > 0 ? "down" : "up", msg });
+      })
+      .catch((error) => {
+        console.error(`[data-health-check] failed: ${error.message}`);
+        pingUptimeKuma(healthCheckPushUrl, { status: "down", msg: error.message });
+      });
+  };
+  const healthCheckTimer = setInterval(runHealthCheck, healthCheckMinutes * 60_000);
+  healthCheckTimer.unref();
+  console.log(`Data health check scheduler enabled every ${healthCheckMinutes} min`);
+}

@@ -1,4 +1,5 @@
 import { searchEbayListings, searchEbaySoldListings } from "./ebay-browse.js";
+import { searchApifySoldListings } from "./apify.js";
 
 function dedupeComps(comps = []) {
   const seen = new Set();
@@ -13,6 +14,32 @@ function dedupeComps(comps = []) {
     unique.push(comp);
   }
   return unique;
+}
+
+function shouldUseApifySoldComps(metadata = {}) {
+  const haystack = String(
+    [
+      metadata.sport,
+      metadata.candidateSport,
+      metadata.setName,
+      metadata.titleHint,
+      metadata.playerName,
+      metadata.ebayTitle,
+      metadata.title,
+      metadata.notes,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  )
+    .toLowerCase()
+    .trim();
+  if (!haystack) return false;
+  return (
+    haystack.includes("trading cards") ||
+    /\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/.test(
+      haystack,
+    )
+  );
 }
 
 export async function getLiveCardComps(
@@ -31,15 +58,19 @@ export async function getLiveCardComps(
       active: liveActive,
     };
   }
-  const ebaySold = await searchEbaySoldListings({
-    metadata,
-    frontImagePath,
-    backImagePath,
-    imageUrl,
-    matchedListings: liveActive,
-  });
+  const soldSource = shouldUseApifySoldComps(metadata)
+    ? await searchApifySoldListings(metadata)
+    : {
+        comps: await searchEbaySoldListings({
+          metadata,
+          frontImagePath,
+          backImagePath,
+          imageUrl,
+          matchedListings: liveActive,
+        }),
+      };
   return {
-    sold: dedupeComps([...ebaySold, ...manual]),
+    sold: dedupeComps([...(Array.isArray(soldSource.comps) ? soldSource.comps : []), ...manual]),
     active: liveActive,
   };
 }

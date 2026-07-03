@@ -32,8 +32,13 @@ function extensionFromMime(mimeType, fallback = "png") {
 
 async function uploadToSupabase(fileName, bytes, mimeType) {
   const supabase = getSupabase();
+  // Image filenames are `${imageId}-${side}.${ext}` with a monotonic imageId,
+  // so a given filename's bytes never change after upload — safe to mark
+  // immutable so browsers stop re-downloading the same card image on every
+  // re-render instead of serving it from cache.
   const { error } = await supabase.storage.from("card-images").upload(fileName, bytes, {
     contentType: mimeType,
+    cacheControl: "31536000",
     upsert: true,
   });
   if (error) throw new Error(`Storage upload failed: ${error.message}`);

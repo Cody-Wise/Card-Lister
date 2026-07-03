@@ -3,15 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Card Lister</title>
+    <title>Bigfoot Boys Command Center</title>
+    <link rel="icon" href="/public/logo-badge.png" />
     <link rel="stylesheet" href="/public/styles.css" />
   </head>
   <body>
     <div class="app-layout">
       <aside class="sidebar">
         <div class="sidebar-logo">
-          <span class="logo-icon">♠</span>
-          <span class="logo-text">CardLister</span>
+          <img class="logo-icon" src="/public/logo-badge.png" alt="Bigfoot Boys Cards" />
+          <span class="logo-text">Bigfoot Boys Command Center</span>
         </div>
         <nav class="sidebar-nav">
           <button class="nav-item active" data-tab="cards">
@@ -135,18 +136,22 @@
             <div class="card-panel-summary static"><span>Pull eBay sales</span></div>
             <div class="card-panel-body">
               <div class="form-row">
+                <label>Quick range <select id="salesRangePreset"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="365">Last 365 days</option><option value="custom">Custom dates</option></select></label>
                 <label>Look back (days) <input id="salesDays" type="number" min="1" value="90" /></label>
                 <label>From <input id="salesStartDate" type="date" /></label>
                 <label>To <input id="salesEndDate" type="date" /></label>
-                <label>Sport <input id="salesSport" type="text" placeholder="Optional" /></label>
+                <label>Sport <select id="salesSport"><option value="">All sports</option><option value="baseball">Baseball</option><option value="basketball">Basketball</option><option value="football">Football</option><option value="soccer">Soccer</option><option value="hockey">Hockey</option><option value="unmatched">Unmatched</option></select></label>
                 <label>Sort sports <select id="salesSportSort"><option value="amount">Revenue</option><option value="quantity">Units sold</option><option value="sportAsc">Sport A-Z</option><option value="sportDesc">Sport Z-A</option></select></label>
               </div>
               <div class="form-actions">
                 <button class="btn btn-outline" id="salesLoadButton">Load sales</button>
                 <span class="msg muted" id="salesStatus"></span>
               </div>
+              <div class="muted">Loading this report also syncs matched eBay sales back into your cards and offers, marking them sold with the realized amount.</div>
             </div>
           </section>
+          <div id="salesSummary" class="listings-summary"></div>
+          <div id="salesSportChart"></div>
           <div id="salesResults" class="list"></div>
         </div>
 
@@ -296,7 +301,6 @@
           <div class="review-header-actions">
             <label>Card <select id="reviewCardSelect"></select></label>
             <button class="btn btn-sm btn-outline" id="loadReviewCardButton">Load</button>
-            <button class="btn btn-sm btn-outline" id="loadRecentCardHedgeSalesButton">Recent CardHedge Sales</button>
             <button class="modal-close" id="closeReviewButton" title="Close">✕</button>
           </div>
         </div>
@@ -351,6 +355,12 @@
                   <option>CSG 10</option><option>CSG 9.5</option><option>CSG 9</option><option>CSG 8.5</option><option>CSG 8</option>
                 </optgroup>
               </select></label>
+            </div>
+            <div class="field-row">
+              <label>Grader <input id="reviewGradingCompany" type="text" placeholder="PSA, BGS, SGC" /></label>
+              <label>Certificate # <input id="reviewCertificationNumber" type="text" placeholder="12345678" /></label>
+            </div>
+            <div class="field-row">
               <label>Comp Grade <select id="reviewCompGradeOverride">
                 <option value="">Auto detect</option>
                 <option value="Raw">Raw</option>
