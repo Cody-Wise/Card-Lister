@@ -46,7 +46,7 @@ async function uploadToSupabase(fileName, bytes, mimeType) {
 
 export async function saveImageRecord(
   state,
-  { cardItemId, side, dataUrl, fileName, skipSupabaseUpload = false },
+  { cardItemId = null, gradingItemId = null, side, dataUrl, fileName, skipSupabaseUpload = false },
 ) {
   await ensureDiskDir();
   const { mimeType, bytes } = parseDataUrl(dataUrl);
@@ -69,6 +69,7 @@ export async function saveImageRecord(
   return {
     id: imageId,
     cardItemId,
+    gradingItemId,
     side,
     fileName: fileName || safeName,
     mimeType,

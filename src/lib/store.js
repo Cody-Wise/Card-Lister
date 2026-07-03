@@ -35,6 +35,7 @@ const emptyState = () => ({
   comps: [],
   offers: [],
   auditEvents: [],
+  gradingItems: [],
 });
 
 function isPublishedOffer(offer) {
@@ -92,7 +93,8 @@ function stateHasData(state) {
     state?.cardIdentities?.length ||
     state?.comps?.length ||
     state?.offers?.length ||
-    state?.auditEvents?.length,
+    state?.auditEvents?.length ||
+    state?.gradingItems?.length,
   );
 }
 
@@ -106,10 +108,11 @@ function stateFreshnessMs(state = {}) {
     state.comps,
     state.offers,
     state.auditEvents,
+    state.gradingItems,
   ];
   for (const items of arrays) {
     for (const item of Array.isArray(items) ? items : []) {
-      for (const key of ["updatedAt", "createdAt", "externalCompUpdatedAt", "externalCompLookupAttemptedAt"]) {
+      for (const key of ["updatedAt", "createdAt", "externalCompUpdatedAt", "externalCompLookupAttemptedAt", "gradedAt", "transferredAt"]) {
         const time = Date.parse(String(item?.[key] || ""));
         if (Number.isFinite(time) && time > newest) newest = time;
       }
@@ -416,6 +419,12 @@ async function writeStateSnapshotToSupabase(state) {
 
 async function writeStateTablesToSupabase(state) {
   const supabase = getSupabase();
+  // gradingItems intentionally isn't in this relational-sync list yet — it
+  // still rides along in the whole-state Supabase snapshot (state_snapshots),
+  // which is the only mirror path active while SUPABASE_ENABLE_RELATIONAL_SYNC
+  // is off (the default). Add a grading_items table + entry here before ever
+  // turning that env var on, or grading data will silently drop out of the
+  // relational mirror.
   const insertOrder = ["batches", "card_items", "card_identities", "card_images", "comps", "offers", "audit_events"];
   const localKey = (table) =>
     ({ card_items: "cardItems", card_images: "cardImages", card_identities: "cardIdentities", audit_events: "auditEvents" })[table] || table;

@@ -185,6 +185,21 @@ const drivePairsList = document.getElementById("drivePairsList");
 const driveImportButton = document.getElementById("driveImportButton");
 const driveImportMessage = document.getElementById("driveImportMessage");
 
+let gradingState = { pairs: [], unmatched: [], selected: new Set(), items: [], pollTimer: null };
+
+const gradingRefreshButton = document.getElementById("gradingRefreshButton");
+const gradingDriveFolderId = document.getElementById("gradingDriveFolderId");
+const gradingDriveScanButton = document.getElementById("gradingDriveScanButton");
+const gradingDriveScanMessage = document.getElementById("gradingDriveScanMessage");
+const gradingDriveResults = document.getElementById("gradingDriveResults");
+const gradingDriveSummary = document.getElementById("gradingDriveSummary");
+const gradingDrivePairsList = document.getElementById("gradingDrivePairsList");
+const gradingDriveImportButton = document.getElementById("gradingDriveImportButton");
+const gradingDriveImportMessage = document.getElementById("gradingDriveImportMessage");
+const gradingItemsList = document.getElementById("gradingItemsList");
+const sentToGradingList = document.getElementById("sentToGradingList");
+const sendToGradingButton = document.getElementById("sendToGradingButton");
+
 function getApiOrigins() {
   const isValidHttpProtocol = /^https?:/i.test(window.location.protocol);
   const host = isValidHttpProtocol ? window.location.hostname : "localhost";
@@ -511,6 +526,12 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   rememberReviewCard(cardId);
   reviewState.details = detail;
   const { card, images } = detail;
+  // "Send to Grading" only makes sense for a card that isn't already live on
+  // eBay — normalizeState() in src/lib/store.js forces status/publishState
+  // back to listed/published for anything with a real listingUrl, so
+  // clicking it on an already-published card would be a confusing no-op.
+  const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
+  sendToGradingButton.style.display = isPublished ? "none" : "";
   const el = document.getElementById("reviewImages");
   if (images && images.length) {
     const sorted = [...images].sort((a, b) => a.side === "front" ? -1 : b.side === "front" ? 1 : 0);
@@ -1673,7 +1694,7 @@ async function loadMarketHeatReport({ forceRefresh = false } = {}) {
 
 function renderCards() {
   const filterBatch = batchFilter.value;
-  let filtered = state.cardItems;
+  let filtered = state.cardItems.filter((c) => c.status !== "sent_to_grading");
   if (filterBatch) filtered = filtered.filter((c) => c.batchId === filterBatch);
   if (!filtered.length) {
     cardsList.innerHTML = `<div class="empty-state">No cards ${filterBatch ? `in batch ${filterBatch}` : "uploaded yet"}</div>`;
@@ -1689,6 +1710,10 @@ function renderCards() {
     const batch = batchLookup[card.batchId];
     const offer = offerLookup[card.id];
     const canCreateOffer = !offer || ["failed", "deleted"].includes(offer.status);
+    // normalizeState() in src/lib/store.js forces status/publishState back
+    // to listed/published for any card with a real listingUrl, so "Send to
+    // Grading" would be a confusing no-op once a card is actually live.
+    const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
     const title = [card.candidateYear, card.candidatePlayer, card.candidateSetName, card.candidateCardNumber].filter(Boolean).join(" · ") || card.id;
     return `<div class="card-item" data-card-id="${card.id}">
       <div class="card-item-header">
@@ -1715,6 +1740,7 @@ function renderCards() {
             : `<button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
           }
           <button class="btn btn-sm btn-outline" data-action="approve-card" data-id="${card.id}">Approve</button>
+          ${isPublished ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
           <button class="btn btn-sm btn-outline btn-danger" data-action="delete-card" data-id="${card.id}">Del</button>
         </div>
       </div>
@@ -1745,6 +1771,7 @@ async function refresh() {
   renderReviewCardSelect();
   renderBatches();
   renderCards();
+  renderSentToGradingList();
   renderPublishedCards();
   if (boot.driveFolderId && !driveFolderId.value) driveFolderId.value = boot.driveFolderId;
   if (reviewState.cardId) {
@@ -1782,6 +1809,9 @@ document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
     }
     if (btn.dataset.tab === "market-heat") {
       if (marketHeatLoadButton && !marketHeatResults?.innerHTML) loadMarketHeatReport();
+    }
+    if (btn.dataset.tab === "grading") {
+      loadGradingItems();
     }
   });
 });
@@ -2048,6 +2078,166 @@ driveImportButton.addEventListener("click", async () => {
     hideProgress();
     driveImportMessage.textContent = e.message;
   }
+});
+
+/* ── Grading tab ── */
+gradingDriveScanButton.addEventListener("click", async () => {
+  const f = gradingDriveFolderId.value.trim();
+  if (!f) { gradingDriveScanMessage.textContent = "Enter a folder ID"; return; }
+  gradingDriveScanMessage.textContent = "Scanning...";
+  gradingDriveResults.style.display = "none";
+  try {
+    const data = await api("/api/drive/scan", { method: "POST", body: JSON.stringify({ folderId: f }) });
+    gradingState.pairs = data.pairs || [];
+    gradingState.unmatched = data.unmatched || [];
+    gradingState.selected = new Set(gradingState.pairs.map((_, i) => i));
+    renderGradingDriveResults(data);
+    gradingDriveResults.style.display = "";
+    gradingDriveScanMessage.textContent = `${data.pairs.length} pairs, ${data.unmatched.length} unmatched`;
+  } catch (e) { gradingDriveScanMessage.textContent = e.message; }
+});
+
+function renderGradingDriveResults(data) {
+  const { pairs, unmatched } = data;
+  let html = `<div class="drive-scan-summary"><strong>${pairs.length} matched pairs</strong> · ${unmatched.length} unmatched</div>`;
+  html += '<div class="drive-pair-list">';
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
+    const checked = gradingState.selected.has(i) ? "checked" : "";
+    html += `<label class="check-label drive-pair-item"><input type="checkbox" data-grading-pair-idx="${i}" ${checked} /><span class="drive-pair-text">${p.front.name} / ${p.back.name}</span></label>`;
+  }
+  html += "</div>";
+  if (unmatched.length) {
+    html += `<details class="unmatched-list"><summary>${unmatched.length} unmatched files</summary>`;
+    for (const f of unmatched) html += `<div class="muted unmatched-item">${f.name}</div>`;
+    html += "</details>";
+  }
+  gradingDrivePairsList.innerHTML = html;
+  gradingDriveSummary.textContent = `Folder: ${gradingDriveFolderId.value.trim()}\nTotal: ${data.totalFiles}\nImages: ${data.imageFiles}\nPairs: ${pairs.length}\nUnmatched: ${unmatched.length}`;
+}
+
+gradingDrivePairsList.addEventListener("change", (e) => {
+  const cb = e.target.closest("input[data-grading-pair-idx]");
+  if (!cb) return;
+  const idx = parseInt(cb.dataset.gradingPairIdx, 10);
+  if (cb.checked) gradingState.selected.add(idx);
+  else gradingState.selected.delete(idx);
+});
+
+gradingDriveImportButton.addEventListener("click", async () => {
+  const selected = gradingState.pairs.filter((_, i) => gradingState.selected.has(i));
+  if (!selected.length) { gradingDriveImportMessage.textContent = "No pairs selected"; return; }
+  gradingDriveImportMessage.textContent = `Importing ${selected.length} pairs...`;
+  try {
+    const result = await api("/api/grading/import", {
+      method: "POST",
+      body: JSON.stringify({ pairs: selected, folderId: gradingDriveFolderId.value.trim() }),
+    });
+    gradingDriveResults.style.display = "none";
+    gradingDriveImportMessage.textContent = `Added ${result.count} card${result.count === 1 ? "" : "s"} to the grading queue.`;
+    await loadGradingItems();
+  } catch (e) { gradingDriveImportMessage.textContent = e.message; }
+});
+
+gradingRefreshButton.addEventListener("click", () => loadGradingItems());
+
+function gradingStatusLabel(item) {
+  if (item.status === "pending") return "Not graded yet";
+  if (item.status === "grading") return "Grading in progress...";
+  if (item.status === "graded") return "Graded";
+  if (item.status === "error") return `Error: ${item.error || "unknown"}`;
+  if (item.status === "transferred") return "Transferred to listing queue";
+  return item.status;
+}
+
+function renderGradingItems() {
+  const items = gradingState.items.filter((item) => item.status !== "transferred");
+  if (!items.length) {
+    gradingItemsList.innerHTML = `<div class="empty-state">No cards in the grading queue yet</div>`;
+    return;
+  }
+  gradingItemsList.innerHTML = items.map((item) => {
+    const breakdown = item.status === "graded"
+      ? `<div class="card-item-details">
+          <span class="card-item-detail"><strong>Grade:</strong> ${item.grade ?? "n/a"}${item.gradeLabel ? ` (${item.gradeLabel})` : ""}</span>
+          ${item.centering != null ? `<span class="card-item-detail"><strong>Centering:</strong> ${item.centering}</span>` : ""}
+          ${item.corners != null ? `<span class="card-item-detail"><strong>Corners:</strong> ${item.corners}</span>` : ""}
+          ${item.edges != null ? `<span class="card-item-detail"><strong>Edges:</strong> ${item.edges}</span>` : ""}
+          ${item.surface != null ? `<span class="card-item-detail"><strong>Surface:</strong> ${item.surface}</span>` : ""}
+        </div>`
+      : "";
+    return `<div class="card-item" data-grading-id="${item.id}">
+      <div class="card-item-header">
+        <div class="card-item-title">${item.id}</div>
+      </div>
+      <div class="grading-item-thumbs">
+        ${item.frontImageUrl ? `<img src="${item.frontImageUrl}" alt="front" />` : ""}
+        ${item.backImageUrl ? `<img src="${item.backImageUrl}" alt="back" />` : ""}
+      </div>
+      ${breakdown}
+      <div class="card-item-footer">
+        <span class="badge ${item.status === "error" ? "bad" : item.status === "graded" ? "good" : ""}">${gradingStatusLabel(item)}</span>
+        <div class="card-item-actions">
+          <button class="btn btn-sm btn-outline" data-action="get-ai-grade" data-id="${item.id}" ${item.status === "grading" ? "disabled" : ""}>Get AI Grade</button>
+          <button class="btn btn-sm btn-outline" data-action="transfer-grading-item" data-id="${item.id}" ${item.status === "grading" ? "disabled" : ""}>Transfer to Listing Queue</button>
+          <button class="btn btn-sm btn-outline btn-danger" data-action="discard-grading-item" data-id="${item.id}" ${item.status === "grading" ? "disabled" : ""}>Discard</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderSentToGradingList() {
+  const cards = (state.cardItems || []).filter((c) => c.status === "sent_to_grading");
+  if (!cards.length) {
+    sentToGradingList.innerHTML = `<div class="empty-state">No cards sent to grading</div>`;
+    return;
+  }
+  sentToGradingList.innerHTML = cards.map((card) => {
+    const title = [card.candidateYear, card.candidatePlayer, card.candidateSetName, card.candidateCardNumber].filter(Boolean).join(" · ") || card.id;
+    return `<div class="card-item" data-card-id="${card.id}">
+      <div class="card-item-header">
+        <div class="card-item-title">${title}</div>
+        <div class="card-item-id">${card.id}</div>
+      </div>
+      <div class="card-item-footer">
+        <span class="badge">Sent to grading</span>
+        <div class="card-item-actions">
+          <button class="btn btn-sm btn-outline" data-action="return-from-grading" data-id="${card.id}">Return from Grading</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function loadGradingItems() {
+  try {
+    const data = await api("/api/grading");
+    gradingState.items = data.gradingItems || [];
+    renderGradingItems();
+    const anyGrading = gradingState.items.some((item) => item.status === "grading");
+    if (anyGrading && !gradingState.pollTimer) {
+      gradingState.pollTimer = setInterval(async () => {
+        const poll = await api("/api/grading");
+        gradingState.items = poll.gradingItems || [];
+        renderGradingItems();
+        if (!gradingState.items.some((item) => item.status === "grading")) {
+          clearInterval(gradingState.pollTimer);
+          gradingState.pollTimer = null;
+        }
+      }, 3000);
+    }
+  } catch (e) { gradingDriveScanMessage.textContent = e.message; }
+}
+
+sendToGradingButton.addEventListener("click", async () => {
+  try {
+    const id = reviewCardSelect.value;
+    if (!id) throw new Error("Select a card first.");
+    await api(`/api/card-items/${id}/send-to-grading`, { method: "POST" });
+    reviewMessage.textContent = `Sent ${id} to grading`;
+    await refresh();
+  } catch (e) { reviewMessage.textContent = e.message; }
 });
 
 /* ── Review panel ── */
@@ -2503,6 +2693,23 @@ document.addEventListener("click", async (event) => {
       alert(`Auction offer ${result.offer.status} for ${id}`);
     }
     if (action === "approve-card") await api(`/api/card-items/${id}/approve`, { method: "POST" });
+    if (action === "send-to-grading-card") await api(`/api/card-items/${id}/send-to-grading`, { method: "POST" });
+    if (action === "return-from-grading") await api(`/api/card-items/${id}/return-from-grading`, { method: "POST" });
+    if (action === "get-ai-grade") {
+      await api(`/api/grading/${id}/submit`, { method: "POST" });
+      await loadGradingItems();
+      return;
+    }
+    if (action === "transfer-grading-item") {
+      await api(`/api/grading/${id}/transfer`, { method: "POST" });
+      await loadGradingItems();
+    }
+    if (action === "discard-grading-item") {
+      if (!confirm(`Discard grading item ${id}?`)) return;
+      await api(`/api/grading/${id}`, { method: "DELETE" });
+      await loadGradingItems();
+      return;
+    }
     if (action === "review-card") {
       const card = state.cardItems.find((c) => c.id === id);
       if (card && card.batchId) {

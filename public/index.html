@@ -19,6 +19,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
             Cards
           </button>
+          <button class="nav-item" data-tab="grading">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 6 6 1-4.5 4.5L17.5 20 12 17l-5.5 3 1-6.5L3 9l6-1z"/></svg>
+            Grading
+          </button>
           <button class="nav-item" data-tab="sales">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3z"/><path d="M5 3v18"/><path d="M9 9h10"/><path d="M9 13h10"/><path d="M9 17h10"/></svg>
             Sales
@@ -125,6 +129,45 @@
 
           <div class="card-grid" id="cardsList">
             <div class="empty-state">No cards yet</div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-grading">
+          <header class="section-header">
+            <h2>Grading</h2>
+            <div class="header-actions">
+              <button class="btn btn-ghost" id="gradingRefreshButton">↻</button>
+            </div>
+          </header>
+
+          <details class="card-panel" id="gradingDrivePanel" open>
+            <summary class="card-panel-summary"><span>Pull from Google Drive</span><span class="chevron"></span></summary>
+            <div class="card-panel-body">
+              <div class="form-row">
+                <label>Folder ID <input id="gradingDriveFolderId" type="text" placeholder="Drive folder ID" /></label>
+                <button class="btn btn-sm btn-outline" id="gradingDriveScanButton">Scan folder</button>
+                <span id="gradingDriveScanMessage" class="msg muted"></span>
+              </div>
+              <div id="gradingDriveResults" style="display:none">
+                <pre id="gradingDriveSummary" class="output"></pre>
+                <div id="gradingDrivePairsList"></div>
+                <div class="form-actions">
+                  <button class="btn" id="gradingDriveImportButton">Import selected</button>
+                  <span id="gradingDriveImportMessage" class="msg muted"></span>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <div class="card-grid" id="gradingItemsList">
+            <div class="empty-state">No cards in the grading queue yet</div>
+          </div>
+
+          <header class="section-header" style="margin-top:1.5rem">
+            <h2>Sent to Physical Grading</h2>
+          </header>
+          <div class="card-grid" id="sentToGradingList">
+            <div class="empty-state">No cards sent to grading</div>
           </div>
         </div>
 
@@ -391,6 +434,7 @@
             <button class="btn" id="saveReviewButton">Save changes</button>
             <button class="btn btn-outline" id="saveReviewAndProcessButton">Save &amp; reprocess</button>
             <button class="btn btn-outline" id="approveReviewButton">Approve</button>
+            <button class="btn btn-outline" id="sendToGradingButton">Send to Grading</button>
             <span id="reviewMessage" class="msg muted"></span>
           </div>
 

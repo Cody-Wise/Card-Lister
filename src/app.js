@@ -47,6 +47,7 @@ import {
 } from "./services/apify.js";
 import { renameFile, getFileInfo, listFolder, createFolder, moveFile } from "./services/drive.js";
 import { handleDriveApiRoutes } from "./routes/drive-routes.js";
+import { handleGradingApiRoutes } from "./routes/grading-routes.js";
 import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
 import {
   isAuthenticated,
@@ -1940,6 +1941,11 @@ export async function handler(req, res) {
     if (handled) return;
   }
 
+  if (pathname.startsWith("/api/grading")) {
+    const handled = await handleGradingApiRoutes(req, res, { pathname });
+    if (handled) return;
+  }
+
   if (req.method === "POST" && pathname === "/api/seed") {
     const count = 5;
     return withState(async (state) => {
@@ -3574,6 +3580,56 @@ export async function handler(req, res) {
       card.status = "ready";
       card.updatedAt = nowIso();
       createAuditEvent(state, "cardItem", id, "approved", {});
+      return sendJson(res, 200, card);
+    });
+  }
+
+  if (
+    req.method === "POST" &&
+    pathname.startsWith("/api/card-items/") &&
+    pathname.endsWith("/send-to-grading")
+  ) {
+    const id = pathname.split("/")[3];
+    return withState(async (state) => {
+      const card = state.cardItems.find((item) => item.id === id);
+      if (!card) return notFound(res, "Card item not found");
+      // normalizeState() (src/lib/store.js) forces status/publishState back
+      // to listed/published for any card with a real listingUrl on every
+      // read, so this would otherwise silently no-op for an already-live
+      // listing — reject explicitly instead of pretending it worked.
+      const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
+      if (isPublished) {
+        return sendJson(res, 409, { error: "This card is already listed on eBay — send it to grading before listing it, not after." });
+      }
+      card.status = "sent_to_grading";
+      card.sentToGradingAt = nowIso();
+      card.updatedAt = nowIso();
+      createAuditEvent(state, "cardItem", id, "sent_to_grading", {});
+      return sendJson(res, 200, card);
+    });
+  }
+
+  if (
+    req.method === "POST" &&
+    pathname.startsWith("/api/card-items/") &&
+    pathname.endsWith("/return-from-grading")
+  ) {
+    const id = pathname.split("/")[3];
+    return withState(async (state) => {
+      const card = state.cardItems.find((item) => item.id === id);
+      if (!card) return notFound(res, "Card item not found");
+      // Back to needs_review rather than straight to ready — a graded card
+      // prices very differently than the raw card that went in, so the
+      // pricing/comp evidence should get a fresh look before it's listed.
+      // The reviewer edits candidateGrade/gradingCompany/certificationNumber
+      // through the existing review panel (already supports these fields —
+      // see the review-patch handler above and src/services/ebay-condition.js,
+      // which already builds eBay's graded-card condition descriptors from
+      // exactly these fields) and hits "Save & reprocess" as normal.
+      card.status = "needs_review";
+      card.returnedFromGradingAt = nowIso();
+      card.updatedAt = nowIso();
+      createAuditEvent(state, "cardItem", id, "returned_from_grading", {});
       return sendJson(res, 200, card);
     });
   }

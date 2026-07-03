@@ -550,6 +550,19 @@ select { cursor: pointer; }
   .card-item:hover .card-item-actions { opacity: 1; }
 }
 
+.grading-item-thumbs {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+.grading-item-thumbs img {
+  width: 72px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
 /* Status badges */
 .badge {
   display: inline-flex;

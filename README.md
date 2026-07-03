@@ -50,6 +50,8 @@ This project is a Node.js web app for ingesting card images, extracting metadata
 | [src/services/ebay-browse.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ebay-browse.js) | eBay Browse active and sold listing search |
 | [src/services/drive.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/drive.js) | Google Drive OAuth, folder scan/import/move helpers |
 | [src/services/auth.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/auth.js) | Session cookie and Google login flow |
+| [src/services/ximilar-grading.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ximilar-grading.js) | Ximilar's async "card-grader" AI grade-estimation client (submit/poll/parse) |
+| [src/routes/grading-routes.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/routes/grading-routes.js) | Grading tab's review-queue routes (`/api/grading/*`) — pull from Drive, submit for AI grading, transfer to the listing pipeline, discard |
 
 ## Runtime model
 
@@ -189,15 +191,18 @@ What is still fragile:
 2. Parallel detection without a strong visual model.
 3. Naming consistency between sports and trading-card metadata fields.
 
-## Ximilar AI grade-estimation (explored, not implemented)
+## Grading tab (Ximilar AI grade-estimation + physical-grading tracking)
 
-Ximilar has a real, separate "card-grader" product (confirmed against `https://docs.ximilar.com/collectibles/card-grading`, not just marketing copy) that estimates condition for a raw/ungraded card — centering, corners, edges, surface, and a final 1–10 grade plus a `Poor`–`Gem Mint` label. Deliberately not wired into the pipeline yet:
+Ximilar has a real, separate "card-grader" product (confirmed against `https://docs.ximilar.com/collectibles/card-grading`, not just marketing copy) that estimates condition for a raw/ungraded card — centering, corners, edges, surface, and a final 1–10 grade plus a `Poor`–`Gem Mint` label. This is now wired up as its own "Grading" tab with two related-but-separate flows:
 
-1. **Different API shape than sport_id/tcg_id.** It's an async job API: `POST https://api.ximilar.com/account/v2/request/` with `type: "card-grader"` and `endpoint` set to one of `grade` / `condition` / `centering` / `localize` / `crop_level`, then poll `GET .../account/v2/request/__ID__` until `status: "DONE"`. sport_id/tcg_id are synchronous single-request calls; this would need genuinely new polling/webhook infrastructure, not a copy of the existing pattern in [src/services/ximilar.js](src/services/ximilar.js).
-2. **Separate cost center.** This is billed independently from the sport_id/tcg_id lookups already in use — worth confirming pricing/quota before adding it to every card's processing pipeline.
-3. **Product question, not just an engineering one.** Does a reviewer actually want an AI grade estimate surfaced before listing a raw card (e.g. to catch a card that looks lower-grade than assumed), or would it mostly be noise? That's worth deciding before building the polling infrastructure for it.
+**1. AI grade-estimate review queue.** Pull candidate raw-card image pairs from Google Drive (reuses the existing `/api/drive/scan` folder scan) into a `gradingItems` queue — separate from `cardItems` until you decide what to do with each one. Per item: optionally click "Get AI Grade" to submit it to Ximilar's card-grader and see the estimate, then either "Transfer to Listing Queue" (creates a real batch + cardItem and runs it through the normal OCR/pricing pipeline) or "Discard". Transfer works regardless of whether an item has been graded yet — grading is optional context, not a gate.
 
-If this becomes worth pursuing: build a small async-job client (submit + poll-until-done, similar shape to the existing `withTimeout` helper pattern used elsewhere in this codebase) as its own module, call it optionally per-card (e.g. gated by an env var, same as the other optional integrations), and surface the grade/condition estimate as review-time context rather than auto-applying it to `candidateGrade`.
+  - It's an async job API, unlike the synchronous `sport_id`/`tcg_id` identification calls in [src/services/ximilar.js](src/services/ximilar.js): `POST https://api.ximilar.com/account/v2/request/` with `type: "card-grader"`, then poll `GET .../account/v2/request/{id}` until `status: "DONE"`. See [src/services/ximilar-grading.js](src/services/ximilar-grading.js) for the client, [src/routes/grading-routes.js](src/routes/grading-routes.js) for the routes.
+  - **Separate cost center** — billed independently from the sport_id/tcg_id lookups already in use.
+  - **Fire-and-forget, not blocking** — this app has a single global state-mutation queue (`withState()` in [src/lib/store.js](src/lib/store.js)), so the submit route responds `202` immediately and does the actual submit+poll in a detached background task; the frontend polls `GET /api/grading` while any item is mid-job.
+  - **Response shape is unverified against the real API** — no captured real card-grader response exists yet (unlike sport_id/tcg_id, which do). Parsing is defensive by design (never throws on an unrecognized shape). Treat the first real submission in production as a live smoke test.
+
+**2. Physical-grading status tracking.** From the normal card review flow, "Send to Grading" pulls an already-reviewed card out of the listing flow (`status: "sent_to_grading"`) into its own "Sent to Physical Grading" list — for a card actually being submitted to PSA/BGS/etc, not an AI estimate. "Return from Grading" brings it back to `needs_review` so pricing gets a fresh look, and the reviewer fills in the real `candidateGrade`/`gradingCompany`/`certificationNumber` through the existing review panel — those fields already feed [src/services/ebay-condition.js](src/services/ebay-condition.js)'s graded-card condition descriptors, so no new fields or logic were needed there.
 
 ## eBay integration areas
 
