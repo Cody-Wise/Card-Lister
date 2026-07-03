@@ -1170,7 +1170,12 @@ async function hydrateExternalPricingSummary(
     try {
       const lookupTimeoutMs = Math.max(
         1000,
-        Math.min(15000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
+        // Raised from 12s/15s-ceiling: requesting up to 50 sold comps per
+        // keyword (was 10) takes noticeably longer per SoldComps call
+        // (~4-5s observed per keyword, up to 2 keywords sequentially), so
+        // the old ceiling was tripping this timeout and silently leaving
+        // cards with 0 sold comps even when real matches existed.
+        Math.min(30000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 20000)),
       );
       const result = await withTimeout(
         searchApifySoldListings(metadata),
@@ -1312,7 +1317,12 @@ async function drainOfferExternalRepriceQueue() {
 
         const lookupTimeoutMs = Math.max(
           1000,
-          Math.min(15000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 12000)),
+          // Raised from 12s/15s-ceiling: requesting up to 50 sold comps per
+        // keyword (was 10) takes noticeably longer per SoldComps call
+        // (~4-5s observed per keyword, up to 2 keywords sequentially), so
+        // the old ceiling was tripping this timeout and silently leaving
+        // cards with 0 sold comps even when real matches existed.
+        Math.min(30000, toPositiveInt(process.env.SOLDCOMPS_REPRICE_LOOKUP_TIMEOUT_MS, 20000)),
         );
         const result = await withTimeout(
           searchApifySoldListings(metadata),
