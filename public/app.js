@@ -124,6 +124,7 @@ const marketHeatState = {
 
 const REVIEW_CARD_STORAGE_KEY = "cardLister.review.cardId";
 const REVIEW_OVERLAY_STORAGE_KEY = "cardLister.review.open";
+const GRADING_DRIVE_FOLDER_STORAGE_KEY = "cardLister.grading.folderId";
 
 function readUiStorage(key) {
   try {
@@ -189,6 +190,10 @@ let gradingState = { pairs: [], unmatched: [], selected: new Set(), items: [], p
 
 const gradingRefreshButton = document.getElementById("gradingRefreshButton");
 const gradingDriveFolderId = document.getElementById("gradingDriveFolderId");
+gradingDriveFolderId.value = readUiStorage(GRADING_DRIVE_FOLDER_STORAGE_KEY) || "";
+gradingDriveFolderId.addEventListener("change", () => {
+  writeUiStorage(GRADING_DRIVE_FOLDER_STORAGE_KEY, gradingDriveFolderId.value.trim());
+});
 const gradingDriveScanButton = document.getElementById("gradingDriveScanButton");
 const gradingDriveScanMessage = document.getElementById("gradingDriveScanMessage");
 const gradingDriveResults = document.getElementById("gradingDriveResults");
@@ -2084,6 +2089,7 @@ driveImportButton.addEventListener("click", async () => {
 gradingDriveScanButton.addEventListener("click", async () => {
   const f = gradingDriveFolderId.value.trim();
   if (!f) { gradingDriveScanMessage.textContent = "Enter a folder ID"; return; }
+  writeUiStorage(GRADING_DRIVE_FOLDER_STORAGE_KEY, f);
   gradingDriveScanMessage.textContent = "Scanning...";
   gradingDriveResults.style.display = "none";
   try {

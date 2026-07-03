@@ -1,19 +1,21 @@
 // Ximilar's "card-grader" product (https://docs.ximilar.com/collectibles/card-grading) —
 // estimates a raw/ungraded card's condition (centering, corners, edges,
-// surface) plus an overall 1-10 grade and Poor-Gem Mint label. This is a
+// surface) plus an overall 1-10 grade and a condition label. This is a
 // SEPARATE product from the synchronous sport_id/tcg_id identification calls
 // in src/services/ximilar.js (different auth-scoped billing, per Ximilar's
 // pricing), and a different API shape: an async job you submit and poll,
 // not a single-request call.
 //
-// IMPORTANT: the exact response shape below is built from Ximilar's
-// documentation only — no real card-grader response has been captured in
-// this repo (unlike sport_id/tcg_id, which do have captured-response test
-// fixtures). parseGradingResult() is deliberately defensive (never throws on
-// an unrecognized shape) so a docs/reality mismatch surfaces as a clear
-// per-item error in the UI instead of crashing. Treat the first real
-// submission as a live smoke test, the same way SoldComps got one before
-// being trusted in production.
+// Verified against a real captured job response (2026-07-03, job
+// 87eaa5aa-ad41-4675-b783-f1332753244d). The completed job payload's actual
+// results live at `payload.response.records[]`, NOT `payload.records[]` —
+// the first parseGradingResult() implementation guessed wrong here and
+// silently returned all-null fields against a real "DONE" job. Each
+// submitted image (front, back) comes back as its OWN independent record
+// with its own full `grades: {final, condition, centering, corners, edges,
+// surface}` — Ximilar doesn't know two images are the front/back of one
+// physical card, so it grades each side separately rather than returning
+// one combined card-level result.
 import { promises as fs } from "node:fs";
 
 const XIMILAR_GRADING_SUBMIT_URL = "https://api.ximilar.com/account/v2/request/";
@@ -110,53 +112,43 @@ export async function pollGradingJob(jobId, { timeoutMs = 120000, pollIntervalMs
   }
 }
 
-function firstFinite(...values) {
-  for (const value of values) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
+function finiteValuesOf(gradeObjects, key) {
+  return gradeObjects.map((g) => Number(g?.[key])).filter((v) => Number.isFinite(v));
 }
 
-function firstString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
+function minOf(gradeObjects, key) {
+  const values = finiteValuesOf(gradeObjects, key);
+  return values.length ? Math.min(...values) : null;
 }
 
-// Defensive on purpose — see file header. Looks in several plausible
-// locations for the fields Ximilar's docs describe, rather than assuming one
-// exact shape, and never throws on a shape it doesn't recognize.
+// Still defensive (never throws on an unrecognized shape — returns all
+// nulls instead), but now grounded in a real captured response rather than
+// docs-only guessing. Combines front/back into one card-level result by
+// taking the WORSE (lower) grade per category across whichever sides were
+// submitted — matches how professional grading treats the worse side as
+// capping the overall grade, and degrades naturally to a single side's own
+// numbers when only one image is submitted.
 export function parseGradingResult(payload) {
-  const record =
-    payload?.records?.[0] ||
-    payload?.result?.records?.[0] ||
-    payload?.result ||
-    payload ||
-    {};
+  const empty = { grade: null, gradeLabel: null, centering: null, corners: null, edges: null, surface: null };
+  const records = payload?.response?.records || payload?.records || [];
+  if (!Array.isArray(records) || !records.length) return empty;
 
-  const gradeSection = record?.grade || record?._grade || record;
-  const conditionSection = record?.condition || record?._condition || record;
+  const gradeObjects = records.map((r) => r?.grades).filter((g) => g && typeof g === "object");
+  if (!gradeObjects.length) return empty;
 
-  const grade = firstFinite(
-    gradeSection?.grade,
-    gradeSection?.overall,
-    gradeSection?.final_grade,
-    record?.grade,
-  );
-  const gradeLabel = firstString(
-    gradeSection?.label,
-    gradeSection?.grade_label,
-    record?.label,
-  );
+  const grade = minOf(gradeObjects, "final");
+  // The limiting (lowest-graded) side's condition label represents the
+  // overall call, same reasoning as the numeric grade above.
+  const limiting = grade == null ? null : gradeObjects.find((g) => Number(g.final) === grade);
 
-  const centering = firstFinite(conditionSection?.centering, record?.centering);
-  const corners = firstFinite(conditionSection?.corners, record?.corners);
-  const edges = firstFinite(conditionSection?.edges, record?.edges);
-  const surface = firstFinite(conditionSection?.surface, record?.surface);
-
-  return { grade, gradeLabel, centering, corners, edges, surface };
+  return {
+    grade,
+    gradeLabel: typeof limiting?.condition === "string" ? limiting.condition : null,
+    centering: minOf(gradeObjects, "centering"),
+    corners: minOf(gradeObjects, "corners"),
+    edges: minOf(gradeObjects, "edges"),
+    surface: minOf(gradeObjects, "surface"),
+  };
 }
 
 export async function submitAndPollGrading({ frontBase64, backBase64 }, pollOptions = {}) {

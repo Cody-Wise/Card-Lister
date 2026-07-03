@@ -8,11 +8,11 @@ import {
   submitAndPollGrading,
 } from "../src/services/ximilar-grading.js";
 
-// NOTE: the response shapes mocked below are fabricated from Ximilar's
-// card-grader docs (https://docs.ximilar.com/collectibles/card-grading), not
-// a captured real response — unlike sport_id/tcg_id, this integration has not
-// been live-tested against Ximilar's real API yet. Treat the first real
-// submission as a smoke test before trusting this in production.
+// The parseGradingResult payload shapes below mirror a real captured job
+// response (2026-07-03, job 87eaa5aa-ad41-4675-b783-f1332753244d) with only
+// the image/URL/timing noise trimmed out — results live at
+// payload.response.records[], one record per submitted image, each with its
+// own grades: {final, condition, centering, corners, edges, surface}.
 
 function withEnv(overrides, fn) {
   const original = {};
@@ -98,7 +98,7 @@ test("pollGradingJob polls until DONE and returns the final payload", async () =
       return {
         ok: true,
         status: 200,
-        json: async () => ({ status: "DONE", records: [{ grade: { grade: 9.5, label: "Gem Mint" } }] }),
+        json: async () => ({ status: "DONE", response: { records: [{ grades: { final: 9.5, condition: "Gem Mint" } }] } }),
       };
     });
     try {
@@ -147,30 +147,42 @@ test("pollGradingJob throws a timeout error distinct from a FAILED status when t
   });
 });
 
-test("parseGradingResult defensively extracts grade/condition fields from a records[0].grade/condition shape", () => {
+test("parseGradingResult reads results from response.records[] (the real completed-job shape), one record per submitted image", () => {
+  // Single-image case (e.g. only a front was submitted) — no min-combining needed.
   const payload = {
-    records: [
-      {
-        grade: { grade: 9.5, label: "Gem Mint" },
-        condition: { centering: 9, corners: 9.5, edges: 9, surface: 10 },
-      },
-    ],
+    status: "DONE",
+    response: {
+      records: [
+        { grades: { final: 7, condition: "Near Mint", centering: 6, corners: 7.5, edges: 8, surface: 7.5 } },
+      ],
+    },
   };
   const result = parseGradingResult(payload);
-  assert.equal(result.grade, 9.5);
-  assert.equal(result.gradeLabel, "Gem Mint");
-  assert.equal(result.centering, 9);
-  assert.equal(result.corners, 9.5);
-  assert.equal(result.edges, 9);
-  assert.equal(result.surface, 10);
+  assert.equal(result.grade, 7);
+  assert.equal(result.gradeLabel, "Near Mint");
+  assert.equal(result.centering, 6);
+  assert.equal(result.corners, 7.5);
+  assert.equal(result.edges, 8);
+  assert.equal(result.surface, 7.5);
 });
 
-test("parseGradingResult falls back to flat top-level fields when there's no nested grade/condition object", () => {
-  const payload = { grade: 8, label: "Near Mint-Mint", centering: 8, corners: 8, edges: 7, surface: 9 };
+test("parseGradingResult combines front+back records by taking the worse (lower) grade per category", () => {
+  const payload = {
+    status: "DONE",
+    response: {
+      records: [
+        { grades: { final: 7, condition: "Near Mint", centering: 6, corners: 7.5, edges: 8, surface: 7.5 } },
+        { grades: { final: 8, condition: "Near Mint", centering: 10, corners: 8, edges: 7.5, surface: 7.5 } },
+      ],
+    },
+  };
   const result = parseGradingResult(payload);
-  assert.equal(result.grade, 8);
-  assert.equal(result.gradeLabel, "Near Mint-Mint");
-  assert.equal(result.surface, 9);
+  assert.equal(result.grade, 7);
+  assert.equal(result.gradeLabel, "Near Mint");
+  assert.equal(result.centering, 6);
+  assert.equal(result.corners, 7.5);
+  assert.equal(result.edges, 7.5);
+  assert.equal(result.surface, 7.5);
 });
 
 test("parseGradingResult returns nulls instead of throwing on a completely unrecognized shape", () => {
@@ -181,6 +193,12 @@ test("parseGradingResult returns nulls instead of throwing on a completely unrec
   assert.equal(result.corners, null);
   assert.equal(result.edges, null);
   assert.equal(result.surface, null);
+});
+
+test("parseGradingResult returns nulls when records exist but carry no grades object", () => {
+  const result = parseGradingResult({ response: { records: [{ _status: { code: 200 } }] } });
+  assert.equal(result.grade, null);
+  assert.equal(result.gradeLabel, null);
 });
 
 test("submitAndPollGrading combines submit + poll + parse into one call", async () => {
@@ -194,7 +212,7 @@ test("submitAndPollGrading combines submit + poll + parse into one call", async 
       return {
         ok: true,
         status: 200,
-        json: async () => ({ status: "DONE", records: [{ grade: { grade: 7, label: "Near Mint" } }] }),
+        json: async () => ({ status: "DONE", response: { records: [{ grades: { final: 7, condition: "Near Mint" } }] } }),
       };
     });
     try {
