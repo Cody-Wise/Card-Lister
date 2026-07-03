@@ -131,6 +131,22 @@ function getRequestBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
+// Card images can be stored two ways (see saveImageRecord in
+// src/lib/storage.js): a Supabase Storage URL, or — whenever
+// skipSupabaseUpload is set (Drive imports, Grading-tab transfers) — a
+// disk-relative "/files/xxx.jpg" path served by this app's own static
+// route. eBay's Inventory API rejects a relative path outright ("Invalid
+// value for imageUrl. Incorrect URL format."), so any such path must be
+// made absolute against this app's own public origin before it's sent.
+function resolveEbayImageUrl(url, req) {
+  if (!url) return url;
+  const httpsSupabase = url.replace(/^http:\/\/([^:]+):\d+\/storage/, `${process.env.SUPABASE_URL}/storage`);
+  if (httpsSupabase.startsWith("/")) {
+    return `${getRequestBaseUrl(req)}${httpsSupabase}`;
+  }
+  return httpsSupabase;
+}
+
 function maskToken(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -1884,6 +1900,13 @@ export async function handler(req, res) {
 
   const isEbayAuthRoute =
     pathname === "/api/ebay/auth-url" || pathname === "/api/ebay/auth-callback";
+  // Card images served from disk (see resolveEbayImageUrl / saveImageRecord's
+  // "/files/..." fallback) need to be fetchable by eBay's own crawler and by
+  // eventual buyers viewing the listing — neither has our session cookie, so
+  // this route must stay outside the auth gate the same way Supabase's public
+  // storage bucket already is.
+  const isPublicFilesRoute = pathname.startsWith("/files/");
+  const bypassesAuthGate = isEbayAuthRoute || isPublicFilesRoute;
   const authenticated = isAuthenticated(req);
 
   if (!authenticated && (pathname === "/" || pathname.startsWith("/public/"))) {
@@ -1891,11 +1914,11 @@ export async function handler(req, res) {
     if (served) return;
   }
 
-  if (!authenticated && pathname.startsWith("/api/") && !isEbayAuthRoute) {
+  if (!authenticated && pathname.startsWith("/api/") && !bypassesAuthGate) {
     return sendJson(res, 401, { error: "Unauthorized" });
   }
 
-  if (!authenticated && !isEbayAuthRoute) {
+  if (!authenticated && !bypassesAuthGate) {
     res.writeHead(302, { Location: "/login.html" });
     return res.end();
   }
@@ -3820,15 +3843,11 @@ export async function handler(req, res) {
       let offerData;
       const frontImage = state.cardImages.find((img) => img.cardItemId === id && img.side === "front");
       const backImage = state.cardImages.find((img) => img.cardItemId === id && img.side === "back");
-      function toHttps(url) {
-        if (!url) return url;
-        return url.replace(/^http:\/\/([^:]+):\d+\/storage/, `${process.env.SUPABASE_URL}/storage`);
-      }
       const cardWithUrl = {
         ...card,
         ...listingConfig,
-        frontImageUrl: toHttps(frontImage?.url) || card.frontImageUrl,
-        backImageUrl: toHttps(backImage?.url) || card.backImageUrl,
+        frontImageUrl: resolveEbayImageUrl(frontImage?.url, req) || card.frontImageUrl,
+        backImageUrl: resolveEbayImageUrl(backImage?.url, req) || card.backImageUrl,
       };
       const canUpdateOffer =
         Boolean(existingOffer?.ebayOfferId) &&
@@ -3935,17 +3954,13 @@ export async function handler(req, res) {
       for (const o of existingOffers) existingOfferMap[o.cardItemId] = o;
 
       const cardImages = state.cardImages;
-      const toHttps = (url) => {
-        if (!url) return url;
-        return url.replace(/^http:\/\/([^:]+):\d+\/storage/, `${process.env.SUPABASE_URL}/storage`);
-      };
       const resolveUrl = (c) => {
         const front = cardImages.find((i) => i.cardItemId === c.id && i.side === "front");
         const back = cardImages.find((i) => i.cardItemId === c.id && i.side === "back");
         return {
           ...c,
-          frontImageUrl: toHttps(front?.url) || c.frontImageUrl,
-          backImageUrl: toHttps(back?.url) || c.backImageUrl,
+          frontImageUrl: resolveEbayImageUrl(front?.url, req) || c.frontImageUrl,
+          backImageUrl: resolveEbayImageUrl(back?.url, req) || c.backImageUrl,
         };
       };
       const canUpdateByOfferStatus = (card) => {
