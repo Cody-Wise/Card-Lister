@@ -28,7 +28,7 @@ RUN npx playwright install --with-deps chromium
 # stayed empty for a full 60s wait, so CapSolver never got a chance to solve
 # anything. Extensions need a real ("headed") browser, and this server has
 # no display — xvfb-run below gives Chromium a virtual one.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xvfb \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xvfb xauth \
   && curl -sL "https://github.com/capsolver/capsolver-browser-extension/releases/download/v.1.17.0/CapSolver.Browser.Extension-chrome-v1.17.0.zip" -o /tmp/capsolver.zip \
   && unzip -q /tmp/capsolver.zip -d /app/capsolver-extension \
   && rm /tmp/capsolver.zip \
