@@ -21,7 +21,14 @@ RUN npx playwright install --with-deps chromium
 # fetch can't break a production restart; the real API key gets patched
 # into its assets/config.js from CAPSOLVER_API_KEY at runtime, never baked
 # in here.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+#
+# xvfb: confirmed directly against a real run that Chromium's headless mode
+# (including the newer "headless=new" implementation) never loads the
+# extension's Manifest V3 service worker at all — context.serviceWorkers()
+# stayed empty for a full 60s wait, so CapSolver never got a chance to solve
+# anything. Extensions need a real ("headed") browser, and this server has
+# no display — xvfb-run below gives Chromium a virtual one.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xvfb \
   && curl -sL "https://github.com/capsolver/capsolver-browser-extension/releases/download/v.1.17.0/CapSolver.Browser.Extension-chrome-v1.17.0.zip" -o /tmp/capsolver.zip \
   && unzip -q /tmp/capsolver.zip -d /app/capsolver-extension \
   && rm /tmp/capsolver.zip \
@@ -36,4 +43,4 @@ ENV NODE_ENV=production
 
 VOLUME /app/data
 
-CMD ["node", "src/server.js"]
+CMD ["xvfb-run", "-a", "node", "src/server.js"]

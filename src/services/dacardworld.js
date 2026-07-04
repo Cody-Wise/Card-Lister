@@ -77,7 +77,14 @@ async function launchBrowserContext() {
   // solving the challenge fresh every single day is slower and spends more
   // CapSolver credits than it needs to.
   return chromium.launchPersistentContext(userDataDir, {
-    headless: true,
+    // Confirmed directly against a real run: Chromium's headless mode
+    // (even the newer "headless=new" implementation) never actually loads
+    // the extension's Manifest V3 service worker at all — context
+    // .serviceWorkers() stayed empty for the full run, so CapSolver never
+    // got a chance to solve anything. Extensions need a real ("headed")
+    // browser; see the Dockerfile for the Xvfb virtual-display wrapper
+    // (xvfb-run) that makes that possible on a server with no real display.
+    headless: false,
     viewport: { width: 1920, height: 1080 },
     args: [
       `--disable-extensions-except=${EXTENSION_DIR}`,
