@@ -279,13 +279,29 @@ export async function refreshDaCardWorldWatch() {
       scrapeSection(context, TARGET_URLS.bestPrices, extractClassicGridRows),
     ]);
 
+    const deals = dedupeListings([...dailyDeals, ...bestPrices]);
+
+    // Confirmed directly: a run can come back with zero items across every
+    // section when Cloudflare's challenge doesn't clear in time (the
+    // residential proxy's exit IP can rotate between runs, invalidating the
+    // clearance cookie and forcing a fresh — not always successful — solve
+    // every time). A real DA Card World catalog is never actually empty, so
+    // treat "nothing at all, anywhere" as a failed run and keep whatever was
+    // cached from the last good run rather than overwriting it with an
+    // empty snapshot.
+    if (!newReleases.length && !deals.length) {
+      throw new Error(
+        "Refresh came back with zero items across every section — likely a Cloudflare challenge that didn't clear in time. Keeping the last cached snapshot.",
+      );
+    }
+
     const snapshot = {
       generatedAt: new Date().toISOString(),
       newReleases,
       // Daily deals + best prices are the same "promos/sales" category (the
       // site doesn't have a distinct promotions page) — combined and
       // deduped since a card can appear on both.
-      deals: dedupeListings([...dailyDeals, ...bestPrices]),
+      deals,
     };
     await saveSnapshot(snapshot);
     return snapshot;
