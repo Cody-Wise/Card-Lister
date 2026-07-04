@@ -802,6 +802,14 @@ details[open] .sales-folder-chevron { transform: rotate(45deg); }
   word-break: break-word;
 }
 
+.sales-card-title a {
+  color: var(--ink);
+  text-decoration: none;
+}
+.sales-card-title a:hover {
+  text-decoration: underline;
+}
+
 .sales-card-meta {
   display: flex;
   align-items: center;
