@@ -97,6 +97,22 @@ function compMatchesCardNumber(comp, cardNumber) {
   return titleNumber === String(cardNumber || "").toUpperCase();
 }
 
+// Added after a real production card (2024 Luka Doncic Donruss Optic) had
+// its autographFlag/cardNumber silently corrupted by "relevant" comps that
+// were actually 2021-22 and 2018-19 cards from entirely different Donruss
+// sub-brands (Elite, Optic Opti-Graphs, Rookie Dominator Signatures) —
+// player-name and generic-set-token matching both trivially passed them
+// (any "Luka Doncic" + "Donruss" title matches), and none of them had an
+// extractable card number for compMatchesCardNumber to reject on either.
+// Without a year check, nothing in isRelevantComp actually distinguished
+// "this card" from "any card of this player ever printed under this brand".
+function compMatchesYear(comp, year) {
+  if (!year) return true;
+  const titleYear = extractTitleYear(comp?.title || "");
+  if (!titleYear) return true;
+  return titleYear === Number(year);
+}
+
 function importantSetTokens(setName) {
   return usefulNameTokens(setName)
     .map((token) => token.toLowerCase())
@@ -125,9 +141,10 @@ function compMatchesSet(comp, setName) {
   return tokens.some((token) => title.includes(token));
 }
 
-function isRelevantComp(comp, metadata) {
+export function isRelevantComp(comp, metadata) {
   return (
     compMentionsPlayer(comp, metadata?.playerName) &&
+    compMatchesYear(comp, metadata?.year) &&
     compMatchesCardNumber(comp, metadata?.cardNumber) &&
     compMatchesSet(comp, metadata?.setName)
   );
