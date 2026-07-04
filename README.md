@@ -52,6 +52,8 @@ This project is a Node.js web app for ingesting card images, extracting metadata
 | [src/services/auth.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/auth.js) | Session cookie and Google login flow |
 | [src/services/ximilar-grading.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ximilar-grading.js) | Ximilar's async "card-grader" AI grade-estimation client (submit/poll/parse) |
 | [src/routes/grading-routes.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/routes/grading-routes.js) | Grading tab's review-queue routes (`/api/grading/*`) — pull from Drive, submit for AI grading, transfer to the listing pipeline, discard |
+| [src/services/dacardworld.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/dacardworld.js) | DA Card World watcher — Playwright + CapSolver scrape, raw-row normalization, cache read/write |
+| [src/routes/dacardworld-routes.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/routes/dacardworld-routes.js) | DA Card World tab's routes (`/api/dacardworld*`) — cached snapshot + guarded manual refresh |
 
 ## Runtime model
 
@@ -138,6 +140,31 @@ It uses:
 
 1. Apify sold listing samples.
 2. Player insight endpoint (comps only — see `/api/ebay/market-heat/player-insight`).
+
+### DA Card World watcher
+
+A "DA Card World" tab shows the current new releases and sales/deals from
+the wholesale distributor site `dacardworld.com`, for sourcing decisions —
+not part of the card-listing pipeline itself. The whole site sits behind a
+Cloudflare JS challenge (confirmed directly: plain `fetch()`/curl gets a
+challenge page, not real content, on every page), so
+[src/services/dacardworld.js](src/services/dacardworld.js) runs a real
+headless browser (Playwright) with CapSolver's official browser extension
+loaded (the user's existing CapSolver subscription solves the challenge
+automatically) rather than a paid scraping API. Refreshes on a schedule
+(`DACARDWORLD_WATCH_INTERVAL_MINUTES`, default suggestion once/day — see
+"Background schedulers and monitoring" below), not on every page visit or
+manual-refresh click — the manual refresh route
+(`POST /api/dacardworld/refresh`) enforces the same minimum-interval floor
+regardless of how often it's clicked, the exact lesson learned from Market
+Heat's cache-freshness bug (see `MARKET_HEAT_REFRESH_MS` above). Results are
+cached in `data/dacardworld-cache.json` (a dedicated cache file, not part of
+`state.json` — this is external-site data, not core card-listing business
+data). Selector tuning for the site's two HTML templates (a "classic"
+Foundation-grid template and a Tailwind-based deals template) was done from
+a single research pass over real rendered pages, not a full live-solved run
+— if a refresh ever comes back with zero items for a section, that's the
+first thing to check.
 
 ## Current card processing pipeline
 
@@ -460,9 +487,21 @@ All off by default — see [src/server.js](src/server.js).
 | `SALES_SYNC_INTERVAL_MINUTES` | Enables the eBay sales sync scheduler; set to minutes between runs |
 | `REPRICE_INTERVAL_MINUTES` | Enables the unsold-listing repricing scheduler |
 | `DATA_HEALTH_CHECK_INTERVAL_MINUTES` | Enables the data-quality scan (see [src/jobs/data-health-check.js](src/jobs/data-health-check.js)) |
+| `DACARDWORLD_WATCH_INTERVAL_MINUTES` | Enables the DA Card World watcher (see [src/services/dacardworld.js](src/services/dacardworld.js)) |
 | `UPTIME_KUMA_PUSH_URL_SALES_SYNC` | Optional Uptime Kuma Push-monitor URL pinged after each sales-sync run |
 | `UPTIME_KUMA_PUSH_URL_REPRICE` | Same, for the repricing scheduler |
 | `UPTIME_KUMA_PUSH_URL_DATA_HEALTH_CHECK` | Same, for the data health check |
+| `UPTIME_KUMA_PUSH_URL_DACARDWORLD` | Same, for the DA Card World watcher |
+
+### DA Card World watcher
+
+| Variable | Purpose |
+| --- | --- |
+| `CAPSOLVER_API_KEY` | CapSolver subscription key, patched into the browser extension's config at runtime |
+| `CAPSOLVER_EXTENSION_DIR` | Override for the extension's install path (default: `/app/capsolver-extension`, baked in by the Dockerfile) |
+| `DACARDWORLD_NAVIGATION_TIMEOUT_MS` | Max time for a single page navigation, default 45000 |
+| `DACARDWORLD_CHALLENGE_SETTLE_MS` | Wait time after page load for Cloudflare's challenge to clear before reading content, default 12000 |
+| `DACARDWORLD_MIN_REFRESH_MINUTES` | Floor between real refreshes regardless of manual-refresh clicks, default 60 |
 
 ## Local setup
 

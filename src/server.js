@@ -137,3 +137,24 @@ if (Number.isFinite(healthCheckMinutes) && healthCheckMinutes > 0) {
   healthCheckTimer.unref();
   console.log(`Data health check scheduler enabled every ${healthCheckMinutes} min`);
 }
+
+const daCardWorldMinutes = Number(process.env.DACARDWORLD_WATCH_INTERVAL_MINUTES || 0);
+if (Number.isFinite(daCardWorldMinutes) && daCardWorldMinutes > 0) {
+  const { refreshDaCardWorldWatch } = await import("./services/dacardworld.js");
+  const daCardWorldPushUrl = process.env.UPTIME_KUMA_PUSH_URL_DACARDWORLD || "";
+  const runDaCardWorldWatch = () => {
+    refreshDaCardWorldWatch()
+      .then((result) => {
+        const msg = `${result.newReleases.length} new release(s), ${result.deals.length} deal(s)`;
+        console.log(`[dacardworld] ${msg}`);
+        pingUptimeKuma(daCardWorldPushUrl, { status: "up", msg });
+      })
+      .catch((error) => {
+        console.error(`[dacardworld] failed: ${error.message}`);
+        pingUptimeKuma(daCardWorldPushUrl, { status: "down", msg: error.message });
+      });
+  };
+  const daCardWorldTimer = setInterval(runDaCardWorldWatch, daCardWorldMinutes * 60_000);
+  daCardWorldTimer.unref();
+  console.log(`DA Card World watcher enabled every ${daCardWorldMinutes} min`);
+}

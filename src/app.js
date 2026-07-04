@@ -48,6 +48,7 @@ import {
 import { renameFile, getFileInfo, listFolder, createFolder, moveFile } from "./services/drive.js";
 import { handleDriveApiRoutes } from "./routes/drive-routes.js";
 import { handleGradingApiRoutes } from "./routes/grading-routes.js";
+import { handleDaCardWorldApiRoutes } from "./routes/dacardworld-routes.js";
 import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
 import {
   isAuthenticated,
@@ -2011,6 +2012,11 @@ export async function handler(req, res) {
 
   if (pathname.startsWith("/api/grading")) {
     const handled = await handleGradingApiRoutes(req, res, { pathname });
+    if (handled) return;
+  }
+
+  if (pathname.startsWith("/api/dacardworld")) {
+    const handled = await handleDaCardWorldApiRoutes(req, res, { pathname });
     if (handled) return;
   }
 

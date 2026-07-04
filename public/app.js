@@ -197,6 +197,12 @@ let gradingState = { pairs: [], unmatched: [], selected: new Set(), items: [], p
 // the /send-to-grading route in src/app.js).
 let gradingFeatureEnabled = false;
 
+const daCardWorldRefreshButton = document.getElementById("daCardWorldRefreshButton");
+const daCardWorldStatus = document.getElementById("daCardWorldStatus");
+const daCardWorldUpdatedAt = document.getElementById("daCardWorldUpdatedAt");
+const daCardWorldNewReleases = document.getElementById("daCardWorldNewReleases");
+const daCardWorldDeals = document.getElementById("daCardWorldDeals");
+
 const gradingRefreshButton = document.getElementById("gradingRefreshButton");
 const gradingDriveFolderId = document.getElementById("gradingDriveFolderId");
 gradingDriveFolderId.value = readUiStorage(GRADING_DRIVE_FOLDER_STORAGE_KEY) || "";
@@ -1813,6 +1819,54 @@ async function refresh() {
   serverStatus.textContent = "Connected";
 }
 
+/* ── DA Card World watcher ── */
+function renderDaCardWorldList(container, items) {
+  if (!items || !items.length) {
+    container.innerHTML = `<div class="empty-state">Nothing here yet — try Refresh now.</div>`;
+    return;
+  }
+  container.innerHTML = items
+    .map((item) => {
+      const priceParts = [];
+      if (item.price != null) priceParts.push(`$${item.price.toFixed(2)}`);
+      if (item.originalPrice != null) priceParts.push(`<s class="muted">$${item.originalPrice.toFixed(2)}</s>`);
+      return `<article class="sales-card">
+        <div class="sales-card-title">
+          ${item.isNew ? '<span class="badge">New</span> ' : ""}
+          <a href="${salesEscape(item.url)}" target="_blank" rel="noopener">${salesEscape(item.title)}</a>
+        </div>
+        ${priceParts.length ? `<div class="muted">${priceParts.join(" ")}</div>` : ""}
+      </article>`;
+    })
+    .join("");
+}
+
+async function loadDaCardWorldSnapshot() {
+  try {
+    const data = await api("/api/dacardworld");
+    renderDaCardWorldList(daCardWorldNewReleases, data.newReleases);
+    renderDaCardWorldList(daCardWorldDeals, data.deals);
+    daCardWorldUpdatedAt.textContent = data.generatedAt
+      ? `Last updated ${new Date(data.generatedAt).toLocaleString()}`
+      : "Never refreshed yet — click Refresh now.";
+  } catch (e) {
+    daCardWorldStatus.textContent = e.message;
+  }
+}
+
+if (daCardWorldRefreshButton) {
+  daCardWorldRefreshButton.addEventListener("click", async () => {
+    daCardWorldStatus.textContent = "Refreshing (this can take a minute)...";
+    try {
+      await api("/api/dacardworld/refresh", { method: "POST" });
+      daCardWorldStatus.textContent = "Refresh started — check back shortly.";
+      setTimeout(loadDaCardWorldSnapshot, 30000);
+    } catch (e) {
+      daCardWorldStatus.textContent = e.message;
+    }
+  });
+}
+
 /* ── Tab navigation ── */
 document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1838,6 +1892,9 @@ document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
     }
     if (btn.dataset.tab === "grading") {
       loadGradingItems();
+    }
+    if (btn.dataset.tab === "dacardworld" && !daCardWorldNewReleases?.innerHTML) {
+      loadDaCardWorldSnapshot();
     }
   });
 });

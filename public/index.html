@@ -31,6 +31,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18"/><path d="M5 8c0-2.761 3.134-5 7-5s7 2.239 7 5-3.134 5-7 5-7-2.239-7-5Z"/><path d="M5 16c0-2.761 3.134-5 7-5s7 2.239 7 5-3.134 5-7 5-7-2.239-7-5Z"/></svg>
             Market Heat
           </button>
+          <button class="nav-item" data-tab="dacardworld">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20Z"/></svg>
+            DA Card World
+          </button>
           <button class="nav-item" data-tab="listings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/><path d="M7 16h4"/></svg>
             Listings
@@ -226,6 +230,26 @@
               <p class="muted">Select a player from the market heat board to inspect recent sales activity and sample titles.</p>
             </article>
           </div>
+        </div>
+
+        <div class="tab-content" id="tab-dacardworld">
+          <header class="section-header">
+            <h2>DA Card World</h2>
+          </header>
+          <section class="card-panel">
+            <div class="card-panel-summary static"><span>Current new releases and sales from dacardworld.com</span></div>
+            <div class="card-panel-body">
+              <div class="form-actions">
+                <button class="btn btn-outline" id="daCardWorldRefreshButton">Refresh now</button>
+                <span class="msg muted" id="daCardWorldStatus"></span>
+              </div>
+              <div class="muted" id="daCardWorldUpdatedAt"></div>
+            </div>
+          </section>
+          <h3>New Releases</h3>
+          <div id="daCardWorldNewReleases" class="list"></div>
+          <h3>Sales &amp; Deals</h3>
+          <div id="daCardWorldDeals" class="list"></div>
         </div>
 
         <div class="tab-content" id="tab-listings">
