@@ -68,6 +68,23 @@ async function ensureExtensionApiKey() {
   }
 }
 
+// Confirmed directly against a real run: this server's datacenter IP (plus
+// possibly the automated browser fingerprint) trips a Cloudflare Private
+// Access Token challenge — cryptographic device attestation, not a
+// solvable puzzle, so CapSolver's extension (built for Turnstile/managed
+// challenges) can't do anything about it from a datacenter IP. Routing
+// through a residential proxy is the next thing to try. Optional — falls
+// through to no proxy if DACARDWORLD_PROXY_SERVER isn't set.
+function getProxyConfig() {
+  const server = process.env.DACARDWORLD_PROXY_SERVER || "";
+  if (!server) return undefined;
+  return {
+    server,
+    username: process.env.DACARDWORLD_PROXY_USERNAME || undefined,
+    password: process.env.DACARDWORLD_PROXY_PASSWORD || undefined,
+  };
+}
+
 async function launchBrowserContext() {
   const { chromium } = await import("playwright");
   await ensureExtensionApiKey();
@@ -83,9 +100,10 @@ async function launchBrowserContext() {
     // .serviceWorkers() stayed empty for the full run, so CapSolver never
     // got a chance to solve anything. Extensions need a real ("headed")
     // browser; see the Dockerfile for the Xvfb virtual-display wrapper
-    // (xvfb-run) that makes that possible on a server with no real display.
+    // that makes that possible on a server with no real display.
     headless: false,
     viewport: { width: 1920, height: 1080 },
+    proxy: getProxyConfig(),
     args: [
       `--disable-extensions-except=${EXTENSION_DIR}`,
       `--load-extension=${EXTENSION_DIR}`,
