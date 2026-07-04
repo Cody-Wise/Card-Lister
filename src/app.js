@@ -3993,7 +3993,12 @@ export async function handler(req, res) {
         card.listingId = offer.listingId || extractEbayListingId(offer.listingUrl);
         card.listingUrl = offer.listingUrl;
         card.updatedAt = nowIso();
-        if (card.driveSourceFolderId && (card.driveFrontFileId || card.driveBackFileId)) {
+        // movePublishedDriveImages() can derive the source folder itself
+        // from driveFrontFileId/driveBackFileId's Drive metadata when
+        // driveSourceFolderId wasn't set — requiring driveSourceFolderId
+        // here too defeated that fallback and would silently skip the move
+        // for any card missing just that one field.
+        if (card.driveSourceFolderId || card.driveFrontFileId || card.driveBackFileId) {
           movePublishedDriveImages(card).catch(() => {});
         }
       }
@@ -4171,7 +4176,9 @@ export async function handler(req, res) {
           card.listingId = item.listingId || extractEbayListingId(item.listingUrl);
           card.listingUrl = item.listingUrl;
           card.updatedAt = nowIso();
-          if (card.driveSourceFolderId && (card.driveFrontFileId || card.driveBackFileId)) {
+          // See the equivalent single-offer-publish route above for why
+          // driveSourceFolderId isn't required here on its own.
+          if (card.driveSourceFolderId || card.driveFrontFileId || card.driveBackFileId) {
             movePublishedDriveImages(card).catch(() => {});
           }
         }
