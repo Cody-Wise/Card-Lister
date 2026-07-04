@@ -1791,14 +1791,15 @@ async function refresh() {
     document.querySelector('.nav-item[data-tab="cards"]')?.click();
   }
   renderBatchSelect();
+  // Rebuilding the <select>'s options above naturally resets it to its
+  // first option ("All batches") — deliberately NOT re-narrowing it to
+  // whatever review card happens to be open/restored here, since
+  // reviewState.cardId persists across page reloads (see
+  // shouldRestoreReviewOverlay() below) and every refresh() call
+  // (periodic polling included) was silently re-pinning the Cards tab to
+  // one batch, with no way back to "All batches" short of it changing
+  // again next refresh.
   renderBatchFilter();
-  if (reviewState.cardId) {
-    const reviewCard = boot.cardItems.find((card) => card.id === reviewState.cardId);
-    if (reviewCard?.batchId) {
-      batchFilter.value = reviewCard.batchId;
-      batchFilter.dataset.selected = reviewCard.batchId;
-    }
-  }
   renderApifyTargetSelect();
   renderReviewCardSelect();
   renderBatches();
