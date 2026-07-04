@@ -1771,33 +1771,57 @@ function buildReviewPatch(body = {}, existingCard = {}) {
   };
 }
 
-function buildReviewOverrideMap(body = {}, existingOverrides = {}) {
-  const overrides = { ...(existingOverrides || {}) };
-  const mark = (keys, target) => {
-    if (keys.some((key) => Object.prototype.hasOwnProperty.call(body, key))) {
-      overrides[target] = true;
+// Takes the ALREADY-COMPUTED patch (buildReviewPatch's output), not the raw
+// request body — the review form always submits every field, whether or not
+// a human actually touched it, so keying off "is this key present in the
+// body" (the old behavior) marked every single field as permanently
+// overridden on the very first Save, freezing it against all future
+// OCR/reprocess corrections forever after. Comparing the normalized patch
+// value against what the card already had is the only way to tell a real
+// edit from a field that just round-tripped through the form unchanged —
+// confirmed as the root cause of a card whose wrong cardNumber/autographFlag
+// survived reprocessing even after the OCR itself got fixed (2026-07-04).
+function buildReviewOverrideMap(patch = {}, existingCard = {}) {
+  const overrides = { ...(existingCard.reviewOverrides || {}) };
+  const normalizeComparable = (value) =>
+    value === undefined || value === null || value === "" ? null : value;
+  const booleanFields = new Set([
+    "candidateBaseHint",
+    "candidateAutoHint",
+    "isThickCard",
+    "candidateRookieFlag",
+  ]);
+  const mark = (key) => {
+    if (booleanFields.has(key)) {
+      if (Boolean(patch[key]) !== Boolean(existingCard[key])) overrides[key] = true;
+      return;
+    }
+    if (normalizeComparable(patch[key]) !== normalizeComparable(existingCard[key])) {
+      overrides[key] = true;
     }
   };
-  mark(["playerName", "candidatePlayer"], "candidatePlayer");
-  mark(["sport", "candidateSport"], "candidateSport");
-  mark(["year", "candidateYear"], "candidateYear");
-  mark(["setName", "candidateSetName"], "candidateSetName");
-  mark(["cardNumber", "candidateCardNumber"], "candidateCardNumber");
-  mark(["parallel", "candidateParallel"], "candidateParallel");
-  mark(["brand", "candidateBrand"], "candidateBrand");
-  mark(["team", "candidateTeam"], "candidateTeam");
-  mark(["league", "candidateLeague"], "candidateLeague");
-  mark(["grade", "candidateGrade"], "candidateGrade");
-  mark(["gradingCompany", "professionalGrader"], "gradingCompany");
-  mark(["certificationNumber", "certificateNumber"], "certificationNumber");
-  mark(["baseHint", "candidateBaseHint"], "candidateBaseHint");
-  mark(["autographHint", "candidateAutoHint"], "candidateAutoHint");
-  mark(["serialNumber", "candidateSerialNumber"], "serialNumber");
-  mark(["printRun", "printRunValue", "printRunHint"], "printRun");
-  mark(["compGradeOverride"], "compGradeOverride");
-  mark(["compMatchMode"], "compMatchMode");
-  mark(["thickCard", "isThickCard"], "isThickCard");
-  mark(["rookieMode", "candidateRookieFlag"], "candidateRookieFlag");
+  [
+    "candidatePlayer",
+    "candidateSport",
+    "candidateYear",
+    "candidateSetName",
+    "candidateCardNumber",
+    "candidateParallel",
+    "candidateBrand",
+    "candidateTeam",
+    "candidateLeague",
+    "candidateGrade",
+    "gradingCompany",
+    "certificationNumber",
+    "candidateBaseHint",
+    "candidateAutoHint",
+    "serialNumber",
+    "printRun",
+    "compGradeOverride",
+    "compMatchMode",
+    "isThickCard",
+    "candidateRookieFlag",
+  ].forEach(mark);
   return overrides;
 }
 
@@ -3553,7 +3577,7 @@ export async function handler(req, res) {
       const card = state.cardItems.find((item) => item.id === id);
       if (!card) return notFound(res, "Card item not found");
       const patch = buildReviewPatch(body, card);
-      const reviewOverrides = buildReviewOverrideMap(body, card.reviewOverrides);
+      const reviewOverrides = buildReviewOverrideMap(patch, card);
       Object.assign(card, patch, {
         reviewOverrides,
         updatedAt: nowIso(),
@@ -3575,7 +3599,7 @@ export async function handler(req, res) {
       const card = state.cardItems.find((item) => item.id === id);
       if (!card) return notFound(res, "Card item not found");
       const patch = buildReviewPatch(body, card);
-      const reviewOverrides = buildReviewOverrideMap(body, card.reviewOverrides);
+      const reviewOverrides = buildReviewOverrideMap(patch, card);
       if (needsIdentityRefresh) {
         clearCardProcessingCaches(card);
         card.ebayTitle = "";
