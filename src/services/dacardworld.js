@@ -195,6 +195,34 @@ export function resolveDaCardWorldUrl(href) {
   }
 }
 
+// Pure, unit-testable: DA Card World product titles reliably name the sport
+// right in the title (confirmed against a real scrape — "...Hockey Hobby
+// Box", "...NASCAR Racing Hobby Box", "...Soccer Fourth Edition...",
+// "...Baseball Nation Hobby..."), so a keyword match against the title is
+// enough — no need to fetch each product page individually. "Other" covers
+// non-sport/TCG product and anything that doesn't match a known keyword,
+// rather than guessing.
+const SPORT_KEYWORDS = [
+  ["Basketball", /\bbasketball\b/i],
+  ["Football", /\bfootball\b/i],
+  ["Baseball", /\bbaseball\b/i],
+  ["Hockey", /\bhockey\b/i],
+  ["Soccer", /\bsoccer\b/i],
+  ["Racing", /\b(nascar|racing|formula\s*1|f1)\b/i],
+  ["Wrestling", /\b(wwe|wrestling|aew|wcw)\b/i],
+  ["MMA/Boxing", /\b(ufc|mma|boxing)\b/i],
+  ["Golf", /\bgolf\b/i],
+  ["TCG/Non-Sport", /\b(pokemon|pok[eé]mon|magic|mtg|yu-?gi-?oh|lorcana|marvel|star wars|disney)\b/i],
+];
+
+export function classifyDaCardWorldSport(title) {
+  const haystack = String(title || "");
+  for (const [label, pattern] of SPORT_KEYWORDS) {
+    if (pattern.test(haystack)) return label;
+  }
+  return "Other";
+}
+
 // Pure, unit-testable: raw extracted row -> normalized listing entry.
 // Returns null for rows with no usable title or URL, rather than a
 // half-populated entry the UI would render as a dead/blank link.
@@ -210,6 +238,7 @@ export function normalizeListing(raw = {}) {
     price,
     originalPrice: originalPrice && price != null && originalPrice > price ? originalPrice : null,
     isNew: Boolean(raw.isNew),
+    sport: classifyDaCardWorldSport(title),
   };
 }
 

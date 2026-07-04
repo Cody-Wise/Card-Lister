@@ -5,6 +5,7 @@ import {
   resolveDaCardWorldUrl,
   normalizeListing,
   dedupeListings,
+  classifyDaCardWorldSport,
 } from "../src/services/dacardworld.js";
 
 test("parsePriceText parses a plain dollar amount", () => {
@@ -54,6 +55,7 @@ test("normalizeListing builds a full entry from a real classic-grid-shaped raw r
     price: 4999.95,
     originalPrice: null,
     isNew: true,
+    sport: "Baseball",
   });
 });
 
@@ -86,6 +88,27 @@ test("normalizeListing returns null for a row with no usable title", () => {
 
 test("normalizeListing returns null for a row with no resolvable URL", () => {
   assert.equal(normalizeListing({ title: "No Link Item", href: "" }), null);
+});
+
+test("classifyDaCardWorldSport matches real production titles correctly", () => {
+  assert.equal(classifyDaCardWorldSport("2025/26 Upper Deck SP Authentic Hockey Hobby Box"), "Hockey");
+  assert.equal(classifyDaCardWorldSport("2026 Panini Select NASCAR Racing Hobby Box"), "Racing");
+  assert.equal(
+    classifyDaCardWorldSport("2026 Club Legacyz Icons World Heroes Soccer Fourth Edition Hobby Box"),
+    "Soccer",
+  );
+  assert.equal(classifyDaCardWorldSport("2026 Leaf Baseball Nation Hobby Jumbo"), "Baseball");
+  assert.equal(classifyDaCardWorldSport("2026 Topps Series 1 Baseball Hanger Box"), "Baseball");
+});
+
+test("classifyDaCardWorldSport falls back to Other for an unrecognized title", () => {
+  assert.equal(classifyDaCardWorldSport("2026 Mystery Trading Card Box"), "Other");
+  assert.equal(classifyDaCardWorldSport(""), "Other");
+});
+
+test("classifyDaCardWorldSport recognizes TCG/non-sport product", () => {
+  assert.equal(classifyDaCardWorldSport("Pokemon Scarlet & Violet Booster Box"), "TCG/Non-Sport");
+  assert.equal(classifyDaCardWorldSport("Magic: The Gathering Foundations Collector Booster"), "TCG/Non-Sport");
 });
 
 test("dedupeListings keeps the first occurrence of each URL", () => {

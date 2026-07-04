@@ -1820,24 +1820,57 @@ async function refresh() {
 }
 
 /* ── DA Card World watcher ── */
+const DACARDWORLD_SPORT_ORDER = [
+  "Basketball",
+  "Football",
+  "Baseball",
+  "Hockey",
+  "Soccer",
+  "Racing",
+  "Wrestling",
+  "MMA/Boxing",
+  "Golf",
+  "TCG/Non-Sport",
+  "Other",
+];
+
+function groupDaCardWorldBySport(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const sport = item.sport || "Other";
+    if (!groups.has(sport)) groups.set(sport, []);
+    groups.get(sport).push(item);
+  }
+  return [...groups.entries()].sort((a, b) => {
+    const ai = DACARDWORLD_SPORT_ORDER.indexOf(a[0]);
+    const bi = DACARDWORLD_SPORT_ORDER.indexOf(b[0]);
+    return (ai === -1 ? DACARDWORLD_SPORT_ORDER.length : ai) - (bi === -1 ? DACARDWORLD_SPORT_ORDER.length : bi);
+  });
+}
+
+function renderDaCardWorldItem(item) {
+  const priceParts = [];
+  if (item.originalPrice != null) priceParts.push(`<s class="muted">$${item.originalPrice.toFixed(2)}</s>`);
+  if (item.price != null) priceParts.push(`$${item.price.toFixed(2)}`);
+  return `<article class="sales-card dacardworld-item">
+    <div class="dacardworld-item-title">
+      <a href="${salesEscape(item.url)}" target="_blank" rel="noopener">${salesEscape(item.title)}</a>
+      ${item.isNew ? '<span class="badge">New</span>' : ""}
+    </div>
+    ${priceParts.length ? `<div class="dacardworld-item-price">${priceParts.join(" ")}</div>` : ""}
+  </article>`;
+}
+
 function renderDaCardWorldList(container, items) {
   if (!items || !items.length) {
     container.innerHTML = `<div class="empty-state">Nothing here yet — try Refresh now.</div>`;
     return;
   }
-  container.innerHTML = items
-    .map((item) => {
-      const priceParts = [];
-      if (item.price != null) priceParts.push(`$${item.price.toFixed(2)}`);
-      if (item.originalPrice != null) priceParts.push(`<s class="muted">$${item.originalPrice.toFixed(2)}</s>`);
-      return `<article class="sales-card">
-        <div class="sales-card-title">
-          ${item.isNew ? '<span class="badge">New</span> ' : ""}
-          <a href="${salesEscape(item.url)}" target="_blank" rel="noopener">${salesEscape(item.title)}</a>
-        </div>
-        ${priceParts.length ? `<div class="muted">${priceParts.join(" ")}</div>` : ""}
-      </article>`;
-    })
+  container.innerHTML = groupDaCardWorldBySport(items)
+    .map(
+      ([sport, group]) =>
+        `<h4 class="dacardworld-sport-heading">${salesEscape(sport)}</h4>${group.map(renderDaCardWorldItem).join("")}`,
+    )
     .join("");
 }
 

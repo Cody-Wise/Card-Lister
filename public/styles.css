@@ -802,12 +802,45 @@ details[open] .sales-folder-chevron { transform: rotate(45deg); }
   word-break: break-word;
 }
 
-.sales-card-title a {
+.dacardworld-sport-heading {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.dacardworld-sport-heading:first-child {
+  margin-top: 0;
+}
+
+.dacardworld-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dacardworld-item-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+.dacardworld-item-title a {
   color: var(--ink);
   text-decoration: none;
 }
-.sales-card-title a:hover {
+.dacardworld-item-title a:hover {
   text-decoration: underline;
+}
+
+.dacardworld-item-price {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
 
 .sales-card-meta {
