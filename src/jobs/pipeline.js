@@ -638,7 +638,18 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
     backFileName: backImage?.fileName || "",
     frontImagePath: frontImage?.storagePath || "",
     backImagePath: backImage?.storagePath || "",
-    allowOpenAI: false,
+    // Was hardcoded false, which silently defeated OCR_PROVIDER=openai: when
+    // Ximilar isn't primary (not configured, or OCR_PROVIDER=openai),
+    // extractCardMetadata() falls through past the useXimilarPrimary block
+    // and checks THIS flag before running full front+back OpenAI vision —
+    // with it false, that check always failed too, so every card fell all
+    // the way through to the heuristic-only result plus a narrow
+    // parallel-only probe (no real player/card-number/sport/autograph
+    // reading at all). extractCardMetadata's own useXimilarPrimary check is
+    // already the single source of truth for provider selection, so it's
+    // safe to always allow OpenAI here — when Ximilar is primary the
+    // function returns before ever consulting this flag.
+    allowOpenAI: true,
     allowOpenAIParallel: true,
   });
 
