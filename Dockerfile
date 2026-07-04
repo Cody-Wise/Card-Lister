@@ -36,6 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 COPY public ./public
 COPY src ./src
+COPY docker-entrypoint-xvfb.sh ./
+RUN chmod +x ./docker-entrypoint-xvfb.sh
 
 EXPOSE 3000
 
@@ -43,4 +45,5 @@ ENV NODE_ENV=production
 
 VOLUME /app/data
 
-CMD ["xvfb-run", "-a", "node", "src/server.js"]
+ENTRYPOINT ["./docker-entrypoint-xvfb.sh"]
+CMD ["node", "src/server.js"]
