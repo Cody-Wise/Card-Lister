@@ -3995,7 +3995,20 @@ export async function handler(req, res) {
       // because publish alone never re-sends the inventory item.
       const card = state.cardItems.find((entry) => entry.id === offer.cardItemId);
       if (card) {
-        await createInventoryItem(card);
+        // card.frontImageUrl/backImageUrl are never actually populated as
+        // direct fields on the card record — the real URLs live on the
+        // separate cardImages entries. The batch-create-offers route's
+        // resolveUrl() already does this same lookup + relative-to-absolute
+        // resolution (resolveEbayImageUrl) before calling
+        // createInventoryItem there; without it here too, the PUT went out
+        // with an empty imageUrls array and eBay rejected it.
+        const frontImage = state.cardImages.find((i) => i.cardItemId === card.id && i.side === "front");
+        const backImage = state.cardImages.find((i) => i.cardItemId === card.id && i.side === "back");
+        await createInventoryItem({
+          ...card,
+          frontImageUrl: resolveEbayImageUrl(frontImage?.url, req) || card.frontImageUrl,
+          backImageUrl: resolveEbayImageUrl(backImage?.url, req) || card.backImageUrl,
+        });
       }
       if (normalizeOfferBestOfferTerms(offer)) {
         const updated = await updateOfferPrices([offer]);
