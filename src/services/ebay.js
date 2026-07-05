@@ -873,6 +873,17 @@ function buildEBayTitle(card) {
   const yearStr = year ? String(year) : null;
   const yearPrefix = yearStr && setName && setName.startsWith(yearStr) ? null : yearStr;
 
+  // Graded-card titles need the grader (PSA, BGS, ...) alongside the grade
+  // number — "PSA 10", not just "10" — since buyers search/filter by
+  // grader. normalizeGradedField/inferGradingCompany already do this same
+  // lookup for the item-specifics table; reused here so the title and
+  // specifics never disagree on which grader is shown.
+  const gradingCompany = isGraded ? normalizeGradedField(card.gradingCompany) || inferGradingCompany(grade) : null;
+  const gradeAlreadyHasGrader =
+    gradingCompany && grade && new RegExp(`^${gradingCompany}\\b`, "i").test(String(grade).trim());
+  const gradeLabel = grade ? (gradingCompany && !gradeAlreadyHasGrader ? `${gradingCompany} ${grade}` : grade) : null;
+  const gradedNoNumberLabel = isGraded && !grade ? (gradingCompany ? `${gradingCompany} Graded` : "Graded") : null;
+
   const parts = [
     yearPrefix,
     setName,
@@ -882,8 +893,8 @@ function buildEBayTitle(card) {
     variantLabel && !isRatedRookie && variantLabel !== parallel ? variantLabel : null,
     isAuto ? "Autographed" : null,
     rookieLabel,
-    grade,
-    isGraded && !grade ? "Graded" : null,
+    gradeLabel,
+    gradedNoNumberLabel,
     serial,
   ].filter(Boolean);
 
@@ -897,16 +908,16 @@ function buildEBayTitle(card) {
   }
 
   if (title.length > 80) {
-    const hasGrade = grade && title.includes(grade);
+    const hasGrade = gradeLabel && title.includes(gradeLabel);
     if (hasGrade) {
-      title = parts.filter((p) => p !== grade && (serial ? p !== serial : true)).join(" ").replace(/\s+/g, " ").trim();
+      title = parts.filter((p) => p !== gradeLabel && (serial ? p !== serial : true)).join(" ").replace(/\s+/g, " ").trim();
     }
   }
 
   if (title.length > 80) {
     const hasRookie = rookieLabel && title.includes(rookieLabel);
     if (hasRookie) {
-      title = parts.filter((p) => p !== rookieLabel && (serial && grade ? ![serial, grade].includes(p) : true)).join(" ").replace(/\s+/g, " ").trim();
+      title = parts.filter((p) => p !== rookieLabel && (serial && gradeLabel ? ![serial, gradeLabel].includes(p) : true)).join(" ").replace(/\s+/g, " ").trim();
     }
   }
 

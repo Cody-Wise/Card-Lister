@@ -2144,8 +2144,14 @@ export async function handler(req, res) {
       if (Object.keys(listingConfig).length > 0) {
         Object.assign(card, listingConfig);
       }
-      if (body.title !== undefined) card.ebayTitle = body.title;
-      if (body.description !== undefined) card.ebayDescription = body.description;
+      // Was reading body.title/body.description — the only caller
+      // (saveEbayListingButton in public/app.js) actually sends ebayTitle/
+      // ebayDescription, so neither field was ever persisted here. The
+      // frontend's optimistic local update masked this: it looked saved
+      // until the next full page reload, when the un-persisted edit was
+      // gone.
+      if (body.ebayTitle !== undefined) card.ebayTitle = body.ebayTitle;
+      if (body.ebayDescription !== undefined) card.ebayDescription = body.ebayDescription;
       if (body.specifics !== undefined) card.ebaySpecifics = body.specifics;
       // Distinct from ebaySpecifics above (a display cache overwritten by
       // every /ebay-preview call) — this is what buildItemSpecifics()
