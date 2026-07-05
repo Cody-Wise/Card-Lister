@@ -41,15 +41,20 @@ test("stripEmptySpecifics keeps a real detected value", () => {
   assert.deepEqual(stripped["Player/Athlete"], ["Victor Wembanyama"]);
 });
 
-test("mapCondition reflects the reviewer's selected raw condition instead of always Near Mint", () => {
-  assert.equal(mapCondition({ candidateGrade: "Near Mint or Better" }), "LIKE_NEW");
-  assert.equal(mapCondition({ candidateGrade: "Excellent" }), "USED_EXCELLENT");
+// Confirmed against a real eBay 400 rejection: the Sports Trading Card
+// Singles category (261328) only accepts two top-level condition values —
+// LIKE_NEW (Graded) or USED_VERY_GOOD (Ungraded) — regardless of the
+// reviewer's selected physical grade. That grade goes in the condition
+// descriptor (40001) instead; see buildItemSpecifics/createInventoryItem.
+test("mapCondition always returns USED_VERY_GOOD for a raw card, whatever physical grade was selected", () => {
+  assert.equal(mapCondition({ candidateGrade: "Near Mint or Better" }), "USED_VERY_GOOD");
+  assert.equal(mapCondition({ candidateGrade: "Excellent" }), "USED_VERY_GOOD");
   assert.equal(mapCondition({ candidateGrade: "Very Good" }), "USED_VERY_GOOD");
-  assert.equal(mapCondition({ candidateGrade: "Poor" }), "USED_ACCEPTABLE");
+  assert.equal(mapCondition({ candidateGrade: "Poor" }), "USED_VERY_GOOD");
 });
 
-test("mapCondition defaults to Near Mint or Better when nothing was ever selected", () => {
-  assert.equal(mapCondition({}), "LIKE_NEW");
+test("mapCondition defaults to USED_VERY_GOOD when nothing was ever selected", () => {
+  assert.equal(mapCondition({}), "USED_VERY_GOOD");
 });
 
 test("mapCondition ignores the raw-condition grade for a graded card", () => {

@@ -1256,13 +1256,6 @@ const RAW_CONDITION_DESCRIPTOR_VALUE_IDS = {
 // Coarser top-level Inventory API condition enum, kept in the same
 // increasing-wear order as the descriptor above so the two fields never
 // contradict each other on the listing.
-const RAW_CONDITION_ENUM = {
-  "near mint or better": "LIKE_NEW",
-  excellent: "USED_EXCELLENT",
-  "very good": "USED_VERY_GOOD",
-  poor: "USED_ACCEPTABLE",
-};
-
 // For a raw (non-graded) card, candidateGrade holds the reviewer's selected
 // condition label. Defaults to "near mint or better" only when nothing
 // recognizable was ever selected, matching the previous hardcoded behavior.
@@ -1271,9 +1264,20 @@ function normalizeRawCondition(card) {
   return RAW_CONDITION_DESCRIPTOR_VALUE_IDS[normalized] ? normalized : "near mint or better";
 }
 
+// Confirmed directly against eBay's own docs after a real 400 rejection
+// ("Condition descriptor 40001 is not valid for condition
+// INVALID_CONDITION"): the Sports Trading Card Singles category (261328)
+// accepts exactly two top-level condition values, full stop — LIKE_NEW
+// (Graded, condition ID 2750) or USED_VERY_GOOD (Ungraded, condition ID
+// 4000). No other condition enum is valid for this category as of eBay's
+// Oct 2023 trading-card policy change. The actual physical grade (Near
+// Mint/Excellent/Very Good/Poor) the reviewer picks belongs ONLY in the
+// condition descriptor (40001, see RAW_CONDITION_DESCRIPTOR_VALUE_IDS
+// below) — varying the top-level condition by that same selection, as this
+// used to do, is exactly what produced the rejection.
 export function mapCondition(card) {
   if (card.candidateCondition === "graded") return "LIKE_NEW";
-  return RAW_CONDITION_ENUM[normalizeRawCondition(card)];
+  return "USED_VERY_GOOD";
 }
 
 function hasEbayUserToken() {
