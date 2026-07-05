@@ -4,7 +4,9 @@
 // enumerated value ids:
 //   27501 = Professional Grader   (value id per grading company)
 //   27502 = Grade                 (value id per grade)
-//   27503 = Certification Number  (free-text string)
+//   27503 = Certification Number  (free-text string, goes in additionalInfo
+//                                  — NOT values, which only ever holds
+//                                  predefined numeric IDs)
 //
 // The value-id tables below were pulled live from eBay production's Sell
 // Metadata API (GET /sell/metadata/v1/marketplace/EBAY_US/get_item_condition_
@@ -16,7 +18,7 @@
 const GRADER_NAME_ID = "27501";
 const GRADE_NAME_ID = "27502";
 const CERT_NUMBER_NAME_ID = "27503";
-const CERT_NUMBER_MAX_LENGTH = 20; // eBay's documented constraint for 27503.
+const CERT_NUMBER_MAX_LENGTH = 30; // eBay's documented constraint for 27503.
 
 const GRADER_VALUE_IDS = {
   PSA: "275010",
@@ -134,9 +136,16 @@ export function buildConditionDescriptors(card = {}, { categoryId, sportsCategor
     { name: GRADE_NAME_ID, values: [gradeId] }
   ];
 
+  // Confirmed against eBay's own ConditionDescriptor schema after a real
+  // 400 rejection ("Condition descriptor value 44106187 is not valid...",
+  // "Descriptor information sent as NULL..."): unlike Grader/Grade, the
+  // Certification Number descriptor is free text and belongs in
+  // additionalInfo, not values (values holds predefined numeric IDs only —
+  // there's no such ID for an arbitrary cert number, so eBay rejected it
+  // outright, and additionalInfo was simultaneously seen as unset).
   const certNumber = String(card.certificationNumber || "").trim();
   if (certNumber && certNumber.length <= CERT_NUMBER_MAX_LENGTH) {
-    descriptors.push({ name: CERT_NUMBER_NAME_ID, values: [certNumber] });
+    descriptors.push({ name: CERT_NUMBER_NAME_ID, additionalInfo: certNumber });
   }
 
   return descriptors;

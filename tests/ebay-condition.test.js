@@ -25,7 +25,7 @@ test("builds descriptors for a graded card in the validated sports category", ()
   assert.equal(descriptors.length, 3);
   assert.deepEqual(descriptors[0], { name: "27501", values: ["275010"] });
   assert.deepEqual(descriptors[1], { name: "27502", values: ["275020"] });
-  assert.deepEqual(descriptors[2], { name: "27503", values: ["84523671"] });
+  assert.deepEqual(descriptors[2], { name: "27503", additionalInfo: "84523671" });
 });
 
 test("omits descriptors for an unvalidated category (e.g. TCG/non-sport)", () => {
@@ -57,7 +57,8 @@ test("omits an over-length certification number rather than sending an invalid v
       candidateCondition: "graded",
       gradingCompany: "PSA",
       candidateGrade: "PSA 10",
-      certificationNumber: "123456789012345678901234"
+      // eBay's real documented limit for 27503 is 30 chars — this is 31.
+      certificationNumber: "1234567890123456789012345678901"
     },
     opts
   );
