@@ -607,7 +607,14 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   }
   deleteOfferFromReviewButton.style.display = detail.offer ? "" : "none";
   if (detail.offer) deleteOfferFromReviewButton.textContent = `Delete offer (${detail.offer.status})`;
-  publishOfferFromReviewButton.style.display = detail.offer && detail.offer.status === "created" ? "" : "none";
+  // Was checking offer.status === "created" — a real, fully-created offer's
+  // status is "priced" (see /api/card-items/:id/offers/create), never
+  // literally "created", so this never matched and the button stayed
+  // hidden regardless of whether the offer was actually publishable.
+  // Matches the card-grid's canPublishOffer check instead: a real eBay
+  // offer exists and hasn't been published yet.
+  publishOfferFromReviewButton.style.display =
+    detail.offer && detail.offer.ebayOfferId && !detail.offer.listingUrl ? "" : "none";
   if (detail.offer?.listingUrl) {
     ebayListingUrl.href = detail.offer.listingUrl;
     ebayListingUrl.textContent = detail.offer.listingUrl;
