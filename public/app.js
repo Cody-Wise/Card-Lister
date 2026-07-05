@@ -117,6 +117,7 @@ const progressLabel = document.getElementById("progressLabel");
 const progressPct = document.getElementById("progressPct");
 const progressSub = document.getElementById("progressSub");
 let driveImportPoll = null;
+let tcgDriveImportPoll = null;
 
 const marketHeatState = {
   report: null,
@@ -219,6 +220,25 @@ const gradingDriveImportMessage = document.getElementById("gradingDriveImportMes
 const gradingItemsList = document.getElementById("gradingItemsList");
 const sentToGradingList = document.getElementById("sentToGradingList");
 const sendToGradingButton = document.getElementById("sendToGradingButton");
+
+/* ── TCG tab — same Drive-import pipeline as the main Cards tab, tagged
+   isTcg:true so cards land here instead (see renderTcgCards/renderCards). ── */
+const TCG_DRIVE_FOLDER_STORAGE_KEY = "cardLister.tcg.folderId";
+let tcgDriveState = { pairs: [], unmatched: [], selected: new Set() };
+const tcgRefreshButton = document.getElementById("tcgRefreshButton");
+const tcgDriveFolderId = document.getElementById("tcgDriveFolderId");
+tcgDriveFolderId.value = readUiStorage(TCG_DRIVE_FOLDER_STORAGE_KEY) || "";
+tcgDriveFolderId.addEventListener("change", () => {
+  writeUiStorage(TCG_DRIVE_FOLDER_STORAGE_KEY, tcgDriveFolderId.value.trim());
+});
+const tcgDriveScanButton = document.getElementById("tcgDriveScanButton");
+const tcgDriveScanMessage = document.getElementById("tcgDriveScanMessage");
+const tcgDriveResults = document.getElementById("tcgDriveResults");
+const tcgDriveSummary = document.getElementById("tcgDriveSummary");
+const tcgDrivePairsList = document.getElementById("tcgDrivePairsList");
+const tcgDriveImportButton = document.getElementById("tcgDriveImportButton");
+const tcgDriveImportMessage = document.getElementById("tcgDriveImportMessage");
+const tcgCardsList = document.getElementById("tcgCardsList");
 
 function getApiOrigins() {
   const isValidHttpProtocol = /^https?:/i.test(window.location.protocol);
@@ -1755,66 +1775,88 @@ async function loadMarketHeatReport({ forceRefresh = false } = {}) {
   }
 }
 
+// Shared by the main Cards tab and the TCG tab — same review/offer/publish/
+// grading actions apply to a card regardless of which tab it's shown in.
+function renderCardItemHtml(card, { batchLookup, offerLookup }) {
+  const batch = batchLookup[card.batchId];
+  const offer = offerLookup[card.id];
+  const canCreateOffer = !offer || ["failed", "deleted"].includes(offer.status);
+  // The only other way to publish an offer was the batch-level "Publish"
+  // button, which publishes every unpublished offer in the whole batch at
+  // once — there was no way to publish just one card's already-created
+  // offer on its own.
+  const canPublishOffer = Boolean(offer && offer.ebayOfferId && !offer.listingUrl && !canCreateOffer);
+  // normalizeState() in src/lib/store.js forces status/publishState back
+  // to listed/published for any card with a real listingUrl, so "Send to
+  // Grading" would be a confusing no-op once a card is actually live.
+  const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
+  const title = [card.candidateYear, card.candidatePlayer, card.candidateSetName, card.candidateCardNumber].filter(Boolean).join(" · ") || card.id;
+  return `<div class="card-item" data-card-id="${card.id}">
+    <div class="card-item-header">
+      <div class="card-item-title">${title}</div>
+      <div class="card-item-id">${card.id}</div>
+    </div>
+    <div class="card-item-details">
+      <span class="card-item-detail"><strong>Price:</strong> ${card.recommendedPrice == null ? "n/a" : money(card.recommendedPrice)}</span>
+      <span class="card-item-detail"><strong>Conf:</strong> ${Math.round((card.confidenceScore || 0) * 100)}%</span>
+      <span class="card-item-detail"><strong>Batch:</strong> ${batch ? batch.id : card.batchId}</span>
+      ${card.candidateParallel ? `<span class="card-item-detail"><strong>Par:</strong> ${card.candidateParallel}</span>` : ""}
+      ${card.candidateBaseHint ? `<span class="card-item-detail"><strong>Base</strong></span>` : ""}
+      ${card.candidateAutoHint ? `<span class="card-item-detail"><strong>Auto</strong></span>` : ""}
+      ${offer ? `<span class="card-item-detail"><strong>Offer:</strong> ${offer.status}</span>` : ""}
+    </div>
+    <div class="card-item-footer">
+      ${statusBadge(card.status)}
+      ${disagreementBadge(card)}
+      <div class="card-item-actions">
+        <button class="btn btn-sm btn-outline" data-action="review-card" data-id="${card.id}">Review</button>
+        ${canCreateOffer
+          ? `<button class="btn btn-sm btn-outline" data-action="create-card-offer" data-id="${card.id}">Create BIN Offer</button>
+             <button class="btn btn-sm btn-outline" data-action="create-card-auction-offer" data-id="${card.id}">Create Auction Offer</button>`
+          : `${canPublishOffer ? `<button class="btn btn-sm" data-action="publish-card-offer" data-id="${offer.id}">Publish</button>` : ""}
+             <button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
+        }
+        <button class="btn btn-sm btn-outline" data-action="approve-card" data-id="${card.id}">Approve</button>
+        ${isPublished || !gradingFeatureEnabled ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
+        <button class="btn btn-sm btn-outline btn-danger" data-action="delete-card" data-id="${card.id}">Del</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildCardListLookups() {
+  const batchLookup = {};
+  for (const b of state.batches) batchLookup[b.id] = b;
+  const offerLookup = {};
+  for (const o of (state.offers || [])) offerLookup[o.cardItemId] = o;
+  return { batchLookup, offerLookup };
+}
+
 function renderCards() {
   const filterBatch = batchFilter.value;
-  let filtered = state.cardItems.filter((c) => c.status !== "sent_to_grading");
+  // TCG-imported cards get their own tab (see renderTcgCards) — excluded
+  // here so they don't show up in both places.
+  let filtered = state.cardItems.filter((c) => c.status !== "sent_to_grading" && !c.isTcgImport);
   if (filterBatch) filtered = filtered.filter((c) => c.batchId === filterBatch);
   if (!filtered.length) {
     cardsList.innerHTML = `<div class="empty-state">No cards ${filterBatch ? `in batch ${filterBatch}` : "uploaded yet"}</div>`;
     return;
   }
   filtered.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
-  const batchLookup = {};
-  for (const b of state.batches) batchLookup[b.id] = b;
-  const offerLookup = {};
-  for (const o of (state.offers || [])) offerLookup[o.cardItemId] = o;
+  const lookups = buildCardListLookups();
+  cardsList.innerHTML = filtered.map((card) => renderCardItemHtml(card, lookups)).join("");
+}
 
-  cardsList.innerHTML = filtered.map((card) => {
-    const batch = batchLookup[card.batchId];
-    const offer = offerLookup[card.id];
-    const canCreateOffer = !offer || ["failed", "deleted"].includes(offer.status);
-    // The only other way to publish an offer was the batch-level "Publish"
-    // button, which publishes every unpublished offer in the whole batch at
-    // once — there was no way to publish just one card's already-created
-    // offer on its own.
-    const canPublishOffer = Boolean(offer && offer.ebayOfferId && !offer.listingUrl && !canCreateOffer);
-    // normalizeState() in src/lib/store.js forces status/publishState back
-    // to listed/published for any card with a real listingUrl, so "Send to
-    // Grading" would be a confusing no-op once a card is actually live.
-    const isPublished = card.status === "listed" || card.publishState === "published" || Boolean(card.listingUrl);
-    const title = [card.candidateYear, card.candidatePlayer, card.candidateSetName, card.candidateCardNumber].filter(Boolean).join(" · ") || card.id;
-    return `<div class="card-item" data-card-id="${card.id}">
-      <div class="card-item-header">
-        <div class="card-item-title">${title}</div>
-        <div class="card-item-id">${card.id}</div>
-      </div>
-      <div class="card-item-details">
-        <span class="card-item-detail"><strong>Price:</strong> ${card.recommendedPrice == null ? "n/a" : money(card.recommendedPrice)}</span>
-        <span class="card-item-detail"><strong>Conf:</strong> ${Math.round((card.confidenceScore || 0) * 100)}%</span>
-        <span class="card-item-detail"><strong>Batch:</strong> ${batch ? batch.id : card.batchId}</span>
-        ${card.candidateParallel ? `<span class="card-item-detail"><strong>Par:</strong> ${card.candidateParallel}</span>` : ""}
-        ${card.candidateBaseHint ? `<span class="card-item-detail"><strong>Base</strong></span>` : ""}
-        ${card.candidateAutoHint ? `<span class="card-item-detail"><strong>Auto</strong></span>` : ""}
-        ${offer ? `<span class="card-item-detail"><strong>Offer:</strong> ${offer.status}</span>` : ""}
-      </div>
-      <div class="card-item-footer">
-        ${statusBadge(card.status)}
-        ${disagreementBadge(card)}
-        <div class="card-item-actions">
-          <button class="btn btn-sm btn-outline" data-action="review-card" data-id="${card.id}">Review</button>
-          ${canCreateOffer
-            ? `<button class="btn btn-sm btn-outline" data-action="create-card-offer" data-id="${card.id}">Create BIN Offer</button>
-               <button class="btn btn-sm btn-outline" data-action="create-card-auction-offer" data-id="${card.id}">Create Auction Offer</button>`
-            : `${canPublishOffer ? `<button class="btn btn-sm" data-action="publish-card-offer" data-id="${offer.id}">Publish</button>` : ""}
-               <button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
-          }
-          <button class="btn btn-sm btn-outline" data-action="approve-card" data-id="${card.id}">Approve</button>
-          ${isPublished || !gradingFeatureEnabled ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
-          <button class="btn btn-sm btn-outline btn-danger" data-action="delete-card" data-id="${card.id}">Del</button>
-        </div>
-      </div>
-    </div>`;
-  }).join("");
+function renderTcgCards() {
+  if (!tcgCardsList) return;
+  const filtered = state.cardItems.filter((c) => c.status !== "sent_to_grading" && c.isTcgImport);
+  if (!filtered.length) {
+    tcgCardsList.innerHTML = `<div class="empty-state">No TCG cards imported yet</div>`;
+    return;
+  }
+  filtered.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  const lookups = buildCardListLookups();
+  tcgCardsList.innerHTML = filtered.map((card) => renderCardItemHtml(card, lookups)).join("");
 }
 
 function renderBatchFilter() {
@@ -1849,6 +1891,7 @@ async function refresh() {
   renderReviewCardSelect();
   renderBatches();
   renderCards();
+  renderTcgCards();
   renderSentToGradingList();
   renderPublishedCards();
   if (boot.driveFolderId && !driveFolderId.value) driveFolderId.value = boot.driveFolderId;
@@ -2241,6 +2284,92 @@ driveImportButton.addEventListener("click", async () => {
     driveImportMessage.textContent = e.message;
   }
 });
+
+/* ── TCG tab ── */
+tcgDriveScanButton.addEventListener("click", async () => {
+  const f = tcgDriveFolderId.value.trim();
+  if (!f) { tcgDriveScanMessage.textContent = "Enter a folder ID"; return; }
+  writeUiStorage(TCG_DRIVE_FOLDER_STORAGE_KEY, f);
+  tcgDriveScanMessage.textContent = "Scanning...";
+  tcgDriveResults.style.display = "none";
+  try {
+    const data = await api("/api/drive/scan", { method: "POST", body: JSON.stringify({ folderId: f }) });
+    tcgDriveState.pairs = data.pairs || [];
+    tcgDriveState.unmatched = data.unmatched || [];
+    tcgDriveState.selected = new Set(tcgDriveState.pairs.map((_, i) => i));
+    renderTcgDriveResults(data);
+    tcgDriveResults.style.display = "";
+    tcgDriveScanMessage.textContent = `${data.pairs.length} pairs, ${data.unmatched.length} unmatched`;
+  } catch (e) { tcgDriveScanMessage.textContent = e.message; }
+});
+
+function renderTcgDriveResults(data) {
+  const { pairs, unmatched } = data;
+  let html = `<div class="drive-scan-summary"><strong>${pairs.length} matched pairs</strong> · ${unmatched.length} unmatched</div>`;
+  html += '<div class="drive-pair-list">';
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
+    const checked = tcgDriveState.selected.has(i) ? "checked" : "";
+    html += `<label class="check-label drive-pair-item"><input type="checkbox" data-pair-idx="${i}" ${checked} /><span class="drive-pair-text">${p.front.name} / ${p.back.name}</span></label>`;
+  }
+  html += "</div>";
+  if (unmatched.length) {
+    html += `<details class="unmatched-list"><summary>${unmatched.length} unmatched files</summary>`;
+    for (const f of unmatched) html += `<div class="muted unmatched-item">${f.name}</div>`;
+    html += "</details>";
+  }
+  tcgDrivePairsList.innerHTML = html;
+  tcgDriveSummary.textContent = `Folder: ${tcgDriveFolderId.value.trim()}\nTotal: ${data.totalFiles}\nImages: ${data.imageFiles}\nPairs: ${pairs.length}\nUnmatched: ${unmatched.length}`;
+}
+
+tcgDrivePairsList.addEventListener("change", (e) => {
+  const cb = e.target.closest("input[data-pair-idx]");
+  if (!cb) return;
+  const idx = parseInt(cb.dataset.pairIdx, 10);
+  if (cb.checked) tcgDriveState.selected.add(idx);
+  else tcgDriveState.selected.delete(idx);
+});
+
+tcgDriveImportButton.addEventListener("click", async () => {
+  const selected = tcgDriveState.pairs.filter((_, i) => tcgDriveState.selected.has(i));
+  if (!selected.length) { tcgDriveImportMessage.textContent = "No pairs selected"; return; }
+  showProgress("Importing TCG cards from Drive...", 0, `Downloading ${selected.length} pairs from Google Drive`);
+  try {
+    const result = await api("/api/drive/import", {
+      method: "POST",
+      body: JSON.stringify({ pairs: selected, folderId: tcgDriveFolderId.value.trim(), isTcg: true }),
+    });
+    const { batchId, cardCount } = result;
+    tcgDriveResults.style.display = "none";
+    showProgress("Processing cards...", 0, `0 / ${cardCount} done`);
+    if (tcgDriveImportPoll) clearInterval(tcgDriveImportPoll);
+    tcgDriveImportPoll = setInterval(async () => {
+      try {
+        const batchData = await api(`/api/batches/${batchId}`);
+        const done = batchData.cards.filter((c) => c.status !== "new" && c.status !== "ocr_pending").length;
+        const pct = Math.round((done / cardCount) * 100);
+        showProgress("Processing cards...", pct, `${done} / ${cardCount} done`);
+        if (done >= cardCount) {
+          clearInterval(tcgDriveImportPoll);
+          tcgDriveImportPoll = null;
+          tcgDriveImportMessage.textContent = `Imported ${cardCount} cards in batch ${batchId}. Refreshing list...`;
+          hideProgress();
+          await refresh();
+          tcgDriveImportMessage.textContent = `Imported ${cardCount} cards in batch ${batchId}`;
+        }
+      } catch { /* poll will retry */ }
+    }, 2000);
+  } catch (e) {
+    if (tcgDriveImportPoll) {
+      clearInterval(tcgDriveImportPoll);
+      tcgDriveImportPoll = null;
+    }
+    hideProgress();
+    tcgDriveImportMessage.textContent = e.message;
+  }
+});
+
+tcgRefreshButton.addEventListener("click", refresh);
 
 /* ── Grading tab ── */
 gradingDriveScanButton.addEventListener("click", async () => {

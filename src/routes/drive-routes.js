@@ -116,10 +116,11 @@ export async function handleDriveApiRoutes(req, res, { pathname }) {
       }),
     );
 
+    const isTcg = body.isTcg === true;
     const result = await withState(async (state) => {
       const batch = {
         id: createId(state, "batch"),
-        source: "google_drive",
+        source: isTcg ? "google_drive_tcg" : "google_drive",
         notes: body.notes || "",
         status: "uploaded",
         createdAt: nowIso(),
@@ -172,6 +173,12 @@ export async function handleDriveApiRoutes(req, res, { pathname }) {
           driveSourceFolderId: body.folderId || null,
           driveFrontFileId: pair.front.id,
           driveBackFileId: pair.back.id,
+          // Explicit, permanent flag — unlike candidateSport (which the OCR
+          // pipeline freely overwrites from whatever it actually detects in
+          // the image), this is set once at import time and never touched
+          // again, so the TCG tab's membership stays reliable regardless of
+          // OCR accuracy.
+          ...(isTcg ? { isTcgImport: true } : {}),
         };
         state.cardItems.push(cardItem);
         created.push(cardItem);
