@@ -410,6 +410,34 @@ function applyEbayListingMode(mode) {
   if (createOfferFromReviewButton) createOfferFromReviewButton.textContent = "Create buy it now offer";
 }
 
+// Keeps the "Condition" (reviewGrade) select's visible options in sync with
+// the "Graded?" (ebayListingCondition) toggle — Ungraded only offers Near
+// Mint/Excellent/Very Good/Poor, Graded only offers PSA/BGS/SGC/CGC/CSG
+// grades, so the two selects can't disagree (e.g. "Ungraded" + "PSA 10").
+// If the currently-selected option isn't valid for the new mode, falls back
+// to the first option that is.
+function applyConditionModeToGradeSelect() {
+  if (!reviewGrade || !ebayListingCondition) return;
+  const mode = ebayListingCondition.value;
+  const previousValue = reviewGrade.value;
+  let firstVisibleOption = null;
+  let previousStillVisible = false;
+  for (const optgroup of reviewGrade.querySelectorAll("optgroup")) {
+    const matches = optgroup.dataset.conditionMode === mode;
+    optgroup.hidden = !matches;
+    optgroup.disabled = !matches;
+    if (matches) {
+      for (const option of optgroup.querySelectorAll("option")) {
+        if (!firstVisibleOption) firstVisibleOption = option;
+        if (option.value === previousValue) previousStillVisible = true;
+      }
+    }
+  }
+  if (!previousStillVisible && firstVisibleOption) {
+    reviewGrade.value = firstVisibleOption.value;
+  }
+}
+
 function formatCompSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
   // "apify" covers cards priced before the switch to SoldComps; both show
@@ -579,12 +607,16 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewBaseHint.checked = Boolean(card.candidateBaseHint);
   reviewAutoHint.checked = Boolean(card.candidateAutoHint);
   reviewThickCard.checked = Boolean(card.isThickCard);
-  reviewGrade.value = card.candidateGrade || "";
   reviewNotes.value = card.notes || "";
   const needsFreshPreview = reviewListingLooksStale(card);
   reviewDescription.value = needsFreshPreview ? "" : card.ebayDescription || "";
   ebayListingTitle.value = needsFreshPreview ? "" : card.ebayTitle || "";
   ebayListingCondition.value = card.candidateCondition === "graded" ? "LIKE_NEW" : "USED_VERY_GOOD";
+  // Reveal the matching optgroup (Ungraded vs the grader groups) before
+  // restoring the saved grade — setting .value against a currently-hidden/
+  // disabled optgroup's option isn't reliable across browsers.
+  applyConditionModeToGradeSelect();
+  reviewGrade.value = card.candidateGrade || "";
   ebayListingPrice.value = card.recommendedPrice ?? "";
   ebayCategoryId.value = card.ebayCategoryId || "";
   applyEbayListingMode(card.ebayListingFormat === "AUCTION" ? "AUCTION" : "FIXED_PRICE");
@@ -2677,6 +2709,8 @@ saveEbayListingButton.addEventListener("click", async () => {
 ebayListingMode.addEventListener("change", () => {
   applyEbayListingMode(ebayListingMode.value === "auction" ? "AUCTION" : "FIXED_PRICE");
 });
+
+ebayListingCondition.addEventListener("change", applyConditionModeToGradeSelect);
 
 function closeReview() {
   reviewOverlay.style.display = "none";

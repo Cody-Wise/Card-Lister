@@ -402,26 +402,26 @@
             </div>
             <div class="field-row">
               <label>Serial <input id="reviewSerialNumber" type="text" placeholder="002/150" /></label>
-              <label>Grade <select id="reviewGrade">
-                <optgroup label="Ungraded">
+              <label>Condition <select id="reviewGrade">
+                <optgroup label="Ungraded" data-condition-mode="USED_VERY_GOOD">
                   <option value="Near Mint or Better">Near Mint or Better</option>
                   <option value="Excellent">Excellent</option>
                   <option value="Very Good">Very Good</option>
                   <option value="Poor">Poor</option>
                 </optgroup>
-                <optgroup label="PSA">
+                <optgroup label="PSA" data-condition-mode="LIKE_NEW">
                   <option>PSA 10</option><option>PSA 9</option><option>PSA 8</option><option>PSA 7</option><option>PSA 6</option><option>PSA 5</option><option>PSA 4</option><option>PSA 3</option><option>PSA 2</option><option>PSA 1</option>
                 </optgroup>
-                <optgroup label="BGS">
+                <optgroup label="BGS" data-condition-mode="LIKE_NEW">
                   <option>BGS 9.5</option><option>BGS 9</option><option>BGS 8.5</option><option>BGS 8</option><option>BGS 7.5</option><option>BGS 7</option>
                 </optgroup>
-                <optgroup label="SGC">
+                <optgroup label="SGC" data-condition-mode="LIKE_NEW">
                   <option>SGC 10</option><option>SGC 9.5</option><option>SGC 9</option><option>SGC 8</option><option>SGC 7</option><option>SGC 6</option>
                 </optgroup>
-                <optgroup label="CGC">
+                <optgroup label="CGC" data-condition-mode="LIKE_NEW">
                   <option>CGC 10</option><option>CGC 9.5</option><option>CGC 9</option><option>CGC 8.5</option><option>CGC 8</option>
                 </optgroup>
-                <optgroup label="CSG">
+                <optgroup label="CSG" data-condition-mode="LIKE_NEW">
                   <option>CSG 10</option><option>CSG 9.5</option><option>CSG 9</option><option>CSG 8.5</option><option>CSG 8</option>
                 </optgroup>
               </select></label>
@@ -482,7 +482,7 @@
             </div>
             <div class="field-row">
               <label>Title <input id="ebayListingTitle" type="text" placeholder="Auto" /></label>
-              <label>Condition <select id="ebayListingCondition"><option value="USED_VERY_GOOD">Used-Very Good (raw)</option><option value="LIKE_NEW">Like New (graded)</option><option value="NEW">New</option></select></label>
+              <label>Graded? <select id="ebayListingCondition"><option value="USED_VERY_GOOD">Ungraded</option><option value="LIKE_NEW">Graded</option></select></label>
             </div>
             <div class="field-row">
               <label>Listing type
