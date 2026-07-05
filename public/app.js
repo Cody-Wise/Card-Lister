@@ -1734,6 +1734,11 @@ function renderCards() {
     const batch = batchLookup[card.batchId];
     const offer = offerLookup[card.id];
     const canCreateOffer = !offer || ["failed", "deleted"].includes(offer.status);
+    // The only other way to publish an offer was the batch-level "Publish"
+    // button, which publishes every unpublished offer in the whole batch at
+    // once — there was no way to publish just one card's already-created
+    // offer on its own.
+    const canPublishOffer = Boolean(offer && offer.ebayOfferId && !offer.listingUrl && !canCreateOffer);
     // normalizeState() in src/lib/store.js forces status/publishState back
     // to listed/published for any card with a real listingUrl, so "Send to
     // Grading" would be a confusing no-op once a card is actually live.
@@ -1761,7 +1766,8 @@ function renderCards() {
           ${canCreateOffer
             ? `<button class="btn btn-sm btn-outline" data-action="create-card-offer" data-id="${card.id}">Create BIN Offer</button>
                <button class="btn btn-sm btn-outline" data-action="create-card-auction-offer" data-id="${card.id}">Create Auction Offer</button>`
-            : `<button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
+            : `${canPublishOffer ? `<button class="btn btn-sm" data-action="publish-card-offer" data-id="${offer.id}">Publish</button>` : ""}
+               <button class="btn btn-sm btn-outline" data-action="delete-offer" data-id="${offer.id}">Del offer</button>`
           }
           <button class="btn btn-sm btn-outline" data-action="approve-card" data-id="${card.id}">Approve</button>
           ${isPublished || !gradingFeatureEnabled ? "" : `<button class="btn btn-sm btn-outline" data-action="send-to-grading-card" data-id="${card.id}">Send to Grading</button>`}
@@ -2945,6 +2951,15 @@ document.addEventListener("click", async (event) => {
     if (action === "delete-offer") {
       if (!confirm(`Delete offer ${id}?`)) return;
       await api(`/api/offers/${id}`, { method: "DELETE" });
+    }
+    if (action === "publish-card-offer") {
+      if (!confirm("Publish this listing live on eBay now?")) return;
+      const result = await api(`/api/offers/${id}/publish`, { method: "POST" });
+      alert(
+        result?.offer?.status === "published"
+          ? `Published: ${result.offer.listingUrl}`
+          : `Offer ${result?.offer?.status || "not published"} — check the offer for details.`,
+      );
     }
     if (action === "toggle-checklist") {
       const batch = state.batches.find((b) => b.id === id);

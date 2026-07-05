@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildItemSpecificsForCard, stripEmptySpecifics } from "../src/services/ebay.js";
+import { buildItemSpecificsForCard, stripEmptySpecifics, mapCondition } from "../src/services/ebay.js";
 
 test("buildItemSpecificsForCard still includes an empty row for undetected core fields (editable preview table)", () => {
   const specifics = buildItemSpecificsForCard({
@@ -34,4 +34,19 @@ test("stripEmptySpecifics keeps a real detected value", () => {
 
   assert.deepEqual(stripped.Sport, ["Basketball"]);
   assert.deepEqual(stripped["Player/Athlete"], ["Victor Wembanyama"]);
+});
+
+test("mapCondition reflects the reviewer's selected raw condition instead of always Near Mint", () => {
+  assert.equal(mapCondition({ candidateGrade: "Near Mint or Better" }), "LIKE_NEW");
+  assert.equal(mapCondition({ candidateGrade: "Excellent" }), "USED_EXCELLENT");
+  assert.equal(mapCondition({ candidateGrade: "Very Good" }), "USED_VERY_GOOD");
+  assert.equal(mapCondition({ candidateGrade: "Poor" }), "USED_ACCEPTABLE");
+});
+
+test("mapCondition defaults to Near Mint or Better when nothing was ever selected", () => {
+  assert.equal(mapCondition({}), "LIKE_NEW");
+});
+
+test("mapCondition ignores the raw-condition grade for a graded card", () => {
+  assert.equal(mapCondition({ candidateCondition: "graded", candidateGrade: "Poor" }), "LIKE_NEW");
 });

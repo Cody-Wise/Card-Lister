@@ -1224,8 +1224,45 @@ function buildDescription(card) {
     .join("\n");
 }
 
-function mapCondition(card) {
-  return card.candidateCondition === "graded" ? "LIKE_NEW" : "USED_VERY_GOOD";
+// eBay's real "Card Condition" descriptor values for ungraded Sports Trading
+// Card Singles (category 261328) — confirmed live via GET
+// /sell/metadata/v1/marketplace/EBAY_US/get_item_condition_policies
+// (descriptor id 40001, required whenever the top-level condition maps to
+// "Ungraded"). These are the exact same 4 labels already offered in the
+// review panel's condition dropdown for non-graded cards (public/index.html
+// #reviewGrade / rawConditions in buildReviewPatch, src/app.js) — before
+// this, that selection was captured but never actually reached the eBay
+// listing: every raw card was hardcoded to "Near mint or better" (400010)
+// regardless of what a reviewer picked, which meant a genuinely worn
+// vintage card still got listed as if it were near mint.
+const RAW_CONDITION_DESCRIPTOR_VALUE_IDS = {
+  "near mint or better": "400010",
+  excellent: "400011",
+  "very good": "400012",
+  poor: "400013",
+};
+
+// Coarser top-level Inventory API condition enum, kept in the same
+// increasing-wear order as the descriptor above so the two fields never
+// contradict each other on the listing.
+const RAW_CONDITION_ENUM = {
+  "near mint or better": "LIKE_NEW",
+  excellent: "USED_EXCELLENT",
+  "very good": "USED_VERY_GOOD",
+  poor: "USED_ACCEPTABLE",
+};
+
+// For a raw (non-graded) card, candidateGrade holds the reviewer's selected
+// condition label. Defaults to "near mint or better" only when nothing
+// recognizable was ever selected, matching the previous hardcoded behavior.
+function normalizeRawCondition(card) {
+  const normalized = String(card.candidateGrade || "").trim().toLowerCase();
+  return RAW_CONDITION_DESCRIPTOR_VALUE_IDS[normalized] ? normalized : "near mint or better";
+}
+
+export function mapCondition(card) {
+  if (card.candidateCondition === "graded") return "LIKE_NEW";
+  return RAW_CONDITION_ENUM[normalizeRawCondition(card)];
 }
 
 function hasEbayUserToken() {
@@ -1856,7 +1893,7 @@ export async function createInventoryItem(card) {
     : [
         {
           name: "40001",
-          values: ["400010"],
+          values: [RAW_CONDITION_DESCRIPTOR_VALUE_IDS[normalizeRawCondition(card)]],
         },
       ];
   const body = {
