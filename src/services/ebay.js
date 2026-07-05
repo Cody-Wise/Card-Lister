@@ -840,10 +840,22 @@ function inferSport(setName, card) {
   return null;
 }
 
-function resolveCategoryIdForCard(card = {}) {
+export function resolveCategoryIdForCard(card = {}) {
   const config = getConfig();
   if (card.ebayCategoryId) return card.ebayCategoryId;
   const setName = card.candidateSetName || card.setName;
+  // Cards imported via the TCG tab are explicitly, permanently flagged
+  // non-sports at import time (see isTcgImport in drive-routes.js) — trust
+  // that over the keyword-based inference below, which only catches a card
+  // if OCR happens to surface a recognizable TCG/non-sport keyword in the
+  // set name and otherwise silently falls through to the sports category.
+  if (card.isTcgImport) {
+    const kind = inferTradingCardKind(setName, card);
+    if (kind === "non_sport") {
+      return config.nonSportTradingCardCategoryId || config.tradingCardGameCategoryId || config.categoryId;
+    }
+    return config.tradingCardGameCategoryId || config.nonSportTradingCardCategoryId || config.categoryId;
+  }
   const sport = inferSport(setName, card);
   if (sport === "Trading Cards") {
     const kind = inferTradingCardKind(setName, card);

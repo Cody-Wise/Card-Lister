@@ -5,7 +5,14 @@ import {
   stripEmptySpecifics,
   mapCondition,
   buildEBayTitleForCard,
+  resolveCategoryIdForCard,
 } from "../src/services/ebay.js";
+
+// Defaults from getConfig() when the env vars aren't set — match eBay's real
+// category IDs, so these tests exercise the same values production uses.
+const SPORTS_CATEGORY_ID = "261328";
+const TCG_CATEGORY_ID = "183454";
+const NON_SPORT_CATEGORY_ID = "183050";
 
 test("buildItemSpecificsForCard still includes an empty row for undetected core fields (editable preview table)", () => {
   const specifics = buildItemSpecificsForCard({
@@ -107,4 +114,54 @@ test("buildEBayTitleForCard doesn't add a grader for an ungraded (raw) card", ()
   });
   assert.ok(!title.includes("PSA"), `raw card title shouldn't mention a grader, got: ${title}`);
   assert.ok(title.includes("Near Mint or Better"), `expected raw condition text in title, got: ${title}`);
+});
+
+test("resolveCategoryIdForCard defaults a plain sports card to the sports category", () => {
+  // Unlike the TCG/non-sport category ids (which have hardcoded fallbacks),
+  // EBAY_CATEGORY_ID has no default in getConfig() — set it explicitly so
+  // this test reflects real production config instead of the test
+  // environment's unset value.
+  const original = process.env.EBAY_CATEGORY_ID;
+  process.env.EBAY_CATEGORY_ID = SPORTS_CATEGORY_ID;
+  try {
+    assert.equal(
+      resolveCategoryIdForCard({ candidateSetName: "2019 Donruss Football" }),
+      SPORTS_CATEGORY_ID
+    );
+  } finally {
+    if (original === undefined) delete process.env.EBAY_CATEGORY_ID;
+    else process.env.EBAY_CATEGORY_ID = original;
+  }
+});
+
+test("resolveCategoryIdForCard trusts isTcgImport over sport/kind inference, even with no TCG keyword in the set name", () => {
+  // No "pokemon"/"magic"/etc keyword anywhere, and no candidateSport set —
+  // the old keyword-only inference would have silently fallen through to
+  // the sports category here. isTcgImport is the explicit, permanent tab
+  // membership flag and should win regardless.
+  assert.equal(
+    resolveCategoryIdForCard({ isTcgImport: true, candidateSetName: "2023 Series One" }),
+    TCG_CATEGORY_ID
+  );
+});
+
+test("resolveCategoryIdForCard picks the non-sport category for an isTcgImport card whose set name is clearly non-sport", () => {
+  assert.equal(
+    resolveCategoryIdForCard({ isTcgImport: true, candidateSetName: "Star Wars Chrome" }),
+    NON_SPORT_CATEGORY_ID
+  );
+});
+
+test("resolveCategoryIdForCard still honors an explicit manual ebayCategoryId override for a TCG-imported card", () => {
+  assert.equal(
+    resolveCategoryIdForCard({ isTcgImport: true, ebayCategoryId: "99999" }),
+    "99999"
+  );
+});
+
+test("resolveCategoryIdForCard falls back to keyword inference for non-TCG-tab cards (legacy behavior unchanged)", () => {
+  assert.equal(
+    resolveCategoryIdForCard({ candidateSetName: "Pokemon Scarlet & Violet" }),
+    TCG_CATEGORY_ID
+  );
 });
