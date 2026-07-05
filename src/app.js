@@ -3984,6 +3984,19 @@ export async function handler(req, res) {
       const offer = state.offers.find((entry) => entry.id === id);
       if (!offer) return notFound(res, "Offer not found");
       if (!offer.ebayOfferId) return sendJson(res, 400, { error: "Offer has no eBay offer ID" });
+      // Re-PUT the inventory item before publishing, same as the
+      // batch-create-offers route already does for existing offers (see
+      // canUpdateByOfferStatus above). Without this, publishing an offer
+      // whose inventory item was created before a later code/data fix (e.g.
+      // a corrected condition value, an edited title, updated specifics)
+      // just republishes the stale data that's still sitting on eBay's
+      // side — confirmed directly: this offer kept failing with the exact
+      // same condition-validation error after the mapCondition fix shipped,
+      // because publish alone never re-sends the inventory item.
+      const card = state.cardItems.find((entry) => entry.id === offer.cardItemId);
+      if (card) {
+        await createInventoryItem(card);
+      }
       if (normalizeOfferBestOfferTerms(offer)) {
         const updated = await updateOfferPrices([offer]);
         Object.assign(offer, updated?.[0] || {});
@@ -3996,7 +4009,6 @@ export async function handler(req, res) {
       offer.publishedAt = item.publishedAt;
       offer.requestPayload = item.requestPayload || offer.requestPayload || null;
       offer.updatedAt = nowIso();
-      const card = state.cardItems.find((entry) => entry.id === offer.cardItemId);
       if (card) {
         card.status = "listed";
         card.publishState = "published";
