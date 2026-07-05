@@ -2172,7 +2172,11 @@ export async function handler(req, res) {
         batches: state.batches.map(cleanBatch),
         cardItems: state.cardItems.map((card) =>
           cleanCard(card, state.offers.filter((offer) => offer.cardItemId === card.id))),
-        offers: state.offers.map((o) => ({ id: o.id, cardItemId: o.cardItemId, status: o.status, listingUrl: o.listingUrl, publishedAt: o.publishedAt })),
+        // ebayOfferId included so the frontend's per-card "Publish" button
+        // (canPublishOffer) can actually tell an offer was created on eBay
+        // but never published — without it, that check is always false and
+        // the button never renders for any card, no matter its real state.
+        offers: state.offers.map((o) => ({ id: o.id, cardItemId: o.cardItemId, status: o.status, listingUrl: o.listingUrl, publishedAt: o.publishedAt, ebayOfferId: o.ebayOfferId })),
         driveFolderId: process.env.DRIVE_FOLDER_ID || "",
         gradingFeatureEnabled: isGradingFeatureEnabled(),
       });
