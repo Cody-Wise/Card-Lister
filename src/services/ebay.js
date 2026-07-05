@@ -1136,8 +1136,15 @@ function buildItemSpecifics(card) {
   const isThick = card.isThick || card.isThickCard;
   const thickLabel = isThick ? "20 Pt." : "Standard";
   const tradingCardKind = sport === "Trading Cards" ? inferTradingCardKind(setName, card) : null;
+  const isNonSportKind = tradingCardKind === "non_sport";
+  // Same condition the Type field below uses to pick "CCG Individual Card":
+  // an explicit "tcg" keyword match, or an isTcgImport card whose kind is
+  // merely ambiguous (not explicitly "non_sport"). Shared so Game and Type
+  // never disagree — Type saying CCG with no Game value was the same
+  // missing-required-field bug just on the other category's aspect.
+  const isCcgKind = sport === "Trading Cards" && !isNonSportKind && (tradingCardKind === "tcg" || card.isTcgImport);
   const tcgGame =
-    tradingCardKind === "tcg"
+    isCcgKind
       ? (() => {
           const haystack = String([setName, player, card.ebayTitle, card.notes].filter(Boolean).join(" ")).toLowerCase();
           if (/\b(pokemon|pok[eé]mon)\b/.test(haystack)) return "Pokémon TCG";
@@ -1146,17 +1153,28 @@ function buildItemSpecifics(card) {
           if (/\blorcana\b/.test(haystack)) return "Disney Lorcana";
           if (/\bone piece\b/.test(haystack)) return "One Piece CCG";
           if (/\bdigimon\b/.test(haystack)) return "Digimon Card Game";
-          return null;
+          // eBay requires a Game value for CCG Individual Card listings —
+          // fall back to the detected set name rather than omitting the
+          // field for a game not in the list above (confirmed live: an
+          // analogous missing Franchise value on the non-sport side was a
+          // hard 400, errorId 25002).
+          return setName || null;
         })()
       : null;
   const nonSportFranchise =
-    tradingCardKind === "non_sport"
+    isNonSportKind
       ? (() => {
           const haystack = String([setName, player, card.ebayTitle, card.notes].filter(Boolean).join(" ")).toLowerCase();
           if (/\bstar wars\b/.test(haystack)) return "Star Wars";
           if (/\bmarvel\b/.test(haystack)) return "Marvel";
           if (/\bdc\b/.test(haystack)) return "DC";
-          return null;
+          if (/\bgarbage pail\b/.test(haystack)) return "Garbage Pail Kids";
+          // eBay requires Franchise for Non-Sport Trading Card Singles —
+          // confirmed live via a real 400 (errorId 25002, "The item specific
+          // Franchise is missing") on a Garbage Pail Kids card that fell
+          // through every explicit keyword above. Fall back to the detected
+          // set name rather than leaving the field out entirely.
+          return setName || null;
         })()
       : null;
 
@@ -1191,13 +1209,7 @@ function buildItemSpecifics(card) {
 
   specifics.Type = [
     sport === "Trading Cards"
-      ? // Explicit game/franchise keyword wins outright. Otherwise, for a
-        // TCG-tab import with no matched keyword, default to CCG Individual
-        // Card rather than Non-Sport — matches resolveCategoryIdForCard's
-        // same TCG-first fallback bias for isTcgImport cards. Non-tab
-        // "Trading Cards" sport guesses (from OCR keyword inference alone)
-        // keep the old Non-Sport default when the kind is ambiguous.
-        tradingCardKind === "tcg" || (card.isTcgImport && tradingCardKind !== "non_sport")
+      ? isCcgKind
         ? "CCG Individual Card"
         : "Non-Sport Trading Card"
       : "Sports Trading Card",

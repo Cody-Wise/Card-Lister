@@ -194,3 +194,55 @@ test("buildItemSpecificsForCard keeps Sports Trading Card for a normal (non-TCG-
   });
   assert.deepEqual(specifics.Type, ["Sports Trading Card"]);
 });
+
+test("buildItemSpecificsForCard recognizes Garbage Pail Kids as a Franchise value (real live 400: errorId 25002, Franchise missing)", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "Garbage Pail Kids",
+  });
+  assert.deepEqual(specifics.Type, ["Non-Sport Trading Card"]);
+  assert.deepEqual(specifics.Franchise, ["Garbage Pail Kids"]);
+});
+
+test("buildItemSpecificsForCard falls back to the set name for Franchise when the kind is non_sport but no specific franchise keyword matches", () => {
+  // "non-sport" itself is the generic bucket keyword (see
+  // inferTradingCardKind) — Star Wars/Marvel/DC/Garbage Pail Kids are the
+  // only specific franchises recognized, so anything else in that bucket
+  // must still get a Franchise value rather than an omitted field.
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "1990 Non-Sport Trading Cards Wax Pack",
+  });
+  assert.deepEqual(specifics.Type, ["Non-Sport Trading Card"]);
+  assert.deepEqual(specifics.Franchise, ["1990 Non-Sport Trading Cards Wax Pack"]);
+});
+
+test("buildItemSpecificsForCard defaults an isTcgImport card with a wholly ambiguous set name to CCG Individual Card with a Game value (not Non-Sport with no Franchise)", () => {
+  // No tcg keyword, no non_sport keyword — kind is null. Type's CCG-biased
+  // default for isTcgImport cards must stay consistent with which fallback
+  // field (Game vs Franchise) actually gets populated, or the listing ends
+  // up with a Type that doesn't match any populated required aspect.
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "Wacky Packages Series 12",
+  });
+  assert.deepEqual(specifics.Type, ["CCG Individual Card"]);
+  assert.deepEqual(specifics.Game, ["Wacky Packages Series 12"]);
+  assert.ok(!("Franchise" in specifics));
+});
+
+test("buildItemSpecificsForCard falls back to the set name for Game when no known TCG keyword matches", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "Flesh and Blood TCG",
+  });
+  assert.deepEqual(specifics.Game, ["Flesh and Blood TCG"]);
+});
+
+test("buildItemSpecificsForCard still uses the real game name for a recognized TCG keyword", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "Pokemon Scarlet & Violet",
+  });
+  assert.deepEqual(specifics.Game, ["Pokémon TCG"]);
+});
