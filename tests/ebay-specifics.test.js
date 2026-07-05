@@ -165,3 +165,32 @@ test("resolveCategoryIdForCard falls back to keyword inference for non-TCG-tab c
     TCG_CATEGORY_ID
   );
 });
+
+test("buildItemSpecificsForCard sets Type to CCG Individual Card (not Sports Trading Card) for an isTcgImport card, even with no TCG keyword and an OCR-guessed sport", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    // OCR mis-tagged this — a real risk this session has already run into
+    // for the sports-only pipeline. isTcgImport must win regardless.
+    candidateSport: "Baseball",
+    candidateSetName: "2023 Series One",
+  });
+  assert.deepEqual(specifics.Type, ["CCG Individual Card"]);
+  assert.ok("Card Name" in specifics, "Trading Cards use Card Name, not Player/Athlete");
+  assert.ok(!("Player/Athlete" in specifics));
+});
+
+test("buildItemSpecificsForCard still uses Non-Sport Trading Card for an isTcgImport card with a clear non-sport franchise keyword", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateSetName: "Star Wars Chrome",
+  });
+  assert.deepEqual(specifics.Type, ["Non-Sport Trading Card"]);
+});
+
+test("buildItemSpecificsForCard keeps Sports Trading Card for a normal (non-TCG-tab) sports card", () => {
+  const specifics = buildItemSpecificsForCard({
+    candidateSport: "Baseball",
+    candidateSetName: "2019 Topps",
+  });
+  assert.deepEqual(specifics.Type, ["Sports Trading Card"]);
+});

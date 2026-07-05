@@ -819,6 +819,12 @@ function inferTradingCardKind(setName, card = {}) {
 }
 
 function inferSport(setName, card) {
+  // Cards imported via the TCG tab are explicitly, permanently flagged
+  // non-sports at import time — trust that over candidateSport, which OCR
+  // freely overwrites and can easily mis-tag a TCG card with a real sport
+  // name (see isTcgImport in drive-routes.js and resolveCategoryIdForCard
+  // above, which applies the same rule for eBay category selection).
+  if (card.isTcgImport) return "Trading Cards";
   if (card.candidateSport || card.sport) return card.candidateSport || card.sport;
   const key = String(setName || "").toLowerCase();
   if (/\b(pokemon|pok[eé]mon|magic|mtg|yugioh|yu gi oh|lorcana|one piece|digimon|star wars|marvel|dc|non sport|non-sport)\b/i.test(key)) {
@@ -1185,7 +1191,13 @@ function buildItemSpecifics(card) {
 
   specifics.Type = [
     sport === "Trading Cards"
-      ? tradingCardKind === "tcg"
+      ? // Explicit game/franchise keyword wins outright. Otherwise, for a
+        // TCG-tab import with no matched keyword, default to CCG Individual
+        // Card rather than Non-Sport — matches resolveCategoryIdForCard's
+        // same TCG-first fallback bias for isTcgImport cards. Non-tab
+        // "Trading Cards" sport guesses (from OCR keyword inference alone)
+        // keep the old Non-Sport default when the kind is ambiguous.
+        tradingCardKind === "tcg" || (card.isTcgImport && tradingCardKind !== "non_sport")
         ? "CCG Individual Card"
         : "Non-Sport Trading Card"
       : "Sports Trading Card",
