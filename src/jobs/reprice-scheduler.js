@@ -34,6 +34,36 @@ function repriceThreshold(minDelta) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0.5;
 }
 
+// Hard safety rails on the fully-automated scheduler specifically — unlike
+// the manual "reprice" button (a human reviews the suggestion before
+// clicking "update price"), this job pushes a new price to eBay with no
+// human in the loop, so a single bad comp match (see the card_0123/card_0127
+// pricing bugs earlier this session) can't be allowed to swing a listing's
+// price arbitrarily far in one run. Bounds are relative to the CURRENT
+// listed price, not the comp-derived target.
+function repriceMinFactor() {
+  const parsed = Number(process.env.REPRICE_MIN_FACTOR);
+  return Number.isFinite(parsed) && parsed > 0 && parsed < 1 ? parsed : 0.8;
+}
+
+function repriceMaxFactor() {
+  const parsed = Number(process.env.REPRICE_MAX_FACTOR);
+  return Number.isFinite(parsed) && parsed > 1 ? parsed : 1.2;
+}
+
+// Clamps a comp-derived target price to [currentPrice * minFactor, currentPrice
+// * maxFactor], rounded to cents. Returns the clamped price plus whether
+// clamping actually changed anything, so callers can log/audit it.
+export function clampRepriceTarget(rawTargetPrice, currentPrice) {
+  const minFactor = repriceMinFactor();
+  const maxFactor = repriceMaxFactor();
+  const min = currentPrice * minFactor;
+  const max = currentPrice * maxFactor;
+  const clamped = Math.min(max, Math.max(min, rawTargetPrice));
+  const rounded = Math.round(clamped * 100) / 100;
+  return { price: rounded, clamped: rounded !== Math.round(rawTargetPrice * 100) / 100, min, max };
+}
+
 function lookupTimeoutMs() {
   const parsed = Number(process.env.REPRICE_LOOKUP_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
@@ -112,7 +142,10 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
   }
 
   const repricing = buildManualRepricingSignal(card, offer, currentPrice);
-  const newPrice = normalizeSalesCurrencyValue(repricing.targetPrice);
+  const rawTargetPrice = normalizeSalesCurrencyValue(repricing.targetPrice);
+  const hasRawTarget = Number.isFinite(rawTargetPrice) && rawTargetPrice > 0;
+  const clampResult = hasRawTarget ? clampRepriceTarget(rawTargetPrice, currentPrice) : null;
+  const newPrice = clampResult ? clampResult.price : null;
   const shouldReprice =
     (repricing.status === "overpriced" || repricing.status === "underpriced") &&
     Number.isFinite(newPrice) &&
@@ -140,7 +173,16 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     card.updatedAt = nowIso();
   }
 
-  return { card, offer, repriced: true, oldPrice: currentPrice, newPrice, repricing };
+  return {
+    card,
+    offer,
+    repriced: true,
+    oldPrice: currentPrice,
+    newPrice,
+    rawTargetPrice,
+    clampedToBounds: clampResult?.clamped || false,
+    repricing,
+  };
 }
 
 // Merges a computed result back onto the live card/offer. No network I/O;
@@ -160,6 +202,8 @@ async function writeReprice({ cardId, offerId, result }) {
         offerId,
         oldPrice: result.oldPrice,
         newPrice: result.newPrice,
+        rawTargetPrice: result.rawTargetPrice,
+        clampedToBounds: result.clampedToBounds,
         repricing: result.repricing,
       });
     }

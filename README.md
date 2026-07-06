@@ -486,6 +486,8 @@ All off by default — see [src/server.js](src/server.js).
 | --- | --- |
 | `SALES_SYNC_INTERVAL_MINUTES` | Enables the eBay sales sync scheduler; set to minutes between runs |
 | `REPRICE_INTERVAL_MINUTES` | Enables the unsold-listing repricing scheduler |
+| `REPRICE_MIN_FACTOR` | Scheduler-only floor on a new price as a fraction of the current listed price (default `0.8`, i.e. never reprices down more than 20%) |
+| `REPRICE_MAX_FACTOR` | Scheduler-only ceiling on a new price as a fraction of the current listed price (default `1.2`, i.e. never reprices up more than 20%) |
 | `DATA_HEALTH_CHECK_INTERVAL_MINUTES` | Enables the data-quality scan (see [src/jobs/data-health-check.js](src/jobs/data-health-check.js)) |
 | `DACARDWORLD_WATCH_INTERVAL_MINUTES` | Enables the DA Card World watcher (see [src/services/dacardworld.js](src/services/dacardworld.js)) |
 | `UPTIME_KUMA_PUSH_URL_SALES_SYNC` | Optional Uptime Kuma Push-monitor URL pinged after each sales-sync run |
