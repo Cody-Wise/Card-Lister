@@ -287,7 +287,16 @@ function classifyParallelComps(comps, parallel) {
 
 function applyParallelFilterForPricing(comps, metadata = {}) {
   const parallel = normalizeParallelName(metadata.parallel);
-  if (!parallel || metadata.baseHint) {
+  // A real, specific parallel name always wins over baseHint — baseHint is
+  // meant to catch cards with no confidently-detected parallel at all
+  // (normalizeParallelName already returns "" for that case, and for the
+  // literal "base"/"none" labels). Disabling filtering just because
+  // baseHint is *also* true, even when metadata.parallel is a strong,
+  // specific value, defeated the entire filter for a real "UNSTOPPABLE" /8
+  // parallel whose baseHint had gone stale (see mergeDetectedMetadata in
+  // pipeline.js) — letting an unrelated, differently-named parallel's sold
+  // price anchor the recommendation with zero parallel-name filtering.
+  if (!parallel) {
     return {
       mode: "disabled",
       exactCount: 0,
@@ -427,6 +436,27 @@ export function calculatePrice({
           ? "Using trimmed sold comp median."
           : "Using trimmed sold comp 25th percentile.";
     }
+  } else if (
+    soldPrices.length > 0 &&
+    Boolean(normalizeParallelName(metadata.parallel)) &&
+    parallelMode.mode !== "exact_parallel" &&
+    parallelMode.mode !== "similar_parallel" &&
+    (parallelActiveMode.mode === "exact_parallel" || parallelActiveMode.mode === "similar_parallel") &&
+    activeMedian != null
+  ) {
+    // Sold comps exist, but none of them could be confirmed as this card's
+    // specific parallel — while the active listings DID confirm it. A
+    // same-print-run (or otherwise coincidentally similar) sold comp for a
+    // completely different, unrelated parallel is not comparable just
+    // because it cleared the serial-run filter; trust the parallel-
+    // confirmed active median over it. Real case: a raw "UNSTOPPABLE" /8
+    // card anchored to $206.50 from a PSA-graded "Lucky Envelopes" /8 sold
+    // comp — an unrelated parallel that only coincidentally shared the /8
+    // print run — while the only parallel-confirmed comps (all active)
+    // clustered near $1.
+    recommended = activeMedian;
+    confidence = "low";
+    reason = "No sold comp confirmed this specific parallel; using the active-listing median for confirmed matches instead.";
   } else if (soldPrices.length > 0 && serializedTarget) {
     reason = "Using available sold comps for serialized card pricing.";
     recommended = soldAnchor ?? soldMedian ?? soldP25;

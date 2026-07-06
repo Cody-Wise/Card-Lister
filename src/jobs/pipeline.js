@@ -557,7 +557,7 @@ async function runWithConcurrency(items, limit, worker) {
   await Promise.all(workers);
 }
 
-function mergeDetectedMetadata(preserved, heuristic, ebay) {
+export function mergeDetectedMetadata(preserved, heuristic, ebay) {
   const detected = ebay || {};
   const preferredCardNumber = isWeakCardNumber(preserved.cardNumber)
     ? detected.cardNumber ?? heuristic.cardNumber ?? preserved.cardNumber ?? null
@@ -575,7 +575,19 @@ function mergeDetectedMetadata(preserved, heuristic, ebay) {
     setName: preserved.setName ?? detected.setName ?? heuristic.setName ?? null,
     cardNumber: preferredCardNumber,
     parallel: mergedParallel,
-    baseHint: preserved.baseHint || heuristic.baseHint || (!detected.parallel && Boolean(detected.playerName)),
+    // A confidently-detected, specific parallel (not a weak/generic label —
+    // see isWeakParallelLabel) always overrides baseHint, no matter which
+    // source's OR-chain below set it true. Without this, baseHint could
+    // survive from an earlier, less-informed pass (or a different source
+    // entirely) even after mergedParallel above resolved to a real insert
+    // name — confirmed live: a card correctly identified as an "UNSTOPPABLE"
+    // /8 parallel still carried baseHint:true, which downstream disabled all
+    // parallel-based comp filtering in pricing.js and let an unrelated,
+    // differently-named parallel's sold price anchor the recommended price.
+    baseHint:
+      mergedParallel && !isWeakParallelLabel(mergedParallel)
+        ? false
+        : preserved.baseHint || heuristic.baseHint || (!detected.parallel && Boolean(detected.playerName)),
     grade: preserved.grade ?? heuristic.grade ?? null,
     gradedFlag: preserved.gradedFlag || Boolean(heuristic.gradedFlag),
     compGradeOverride: preserved.compGradeOverride,

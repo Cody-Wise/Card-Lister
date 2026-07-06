@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { calculatePrice } from "../src/services/pricing.js";
-import { choosePricingStrategy } from "../src/jobs/pipeline.js";
+import { choosePricingStrategy, mergeDetectedMetadata } from "../src/jobs/pipeline.js";
 
 test("prices from sold comps with trimming", () => {
   const result = calculatePrice({
@@ -206,4 +206,77 @@ test("uses sparse serial sold comps before active floor", () => {
   assert.equal(result.recommendedPrice, 51.87);
   assert.equal(result.evidence.activeFloor, 1.69);
   assert.equal(result.evidence.soldSerialFilterMode, "fallback_serialized");
+});
+
+test("real regression: doesn't anchor to an unrelated parallel's sold comp that only coincidentally shares the print run", () => {
+  // Reproduces the live card_0123 bug: a raw "UNSTOPPABLE" /8 Eberechi Eze
+  // Prizm recommended $206.50 from a single sold comp that was actually a
+  // completely different parallel ("Lucky Envelopes"), PSA-graded, which
+  // only happened to also be numbered /8. The active listings — the only
+  // comps that actually named "Unstoppable" — sat near $1.
+  const result = calculatePrice({
+    strategy: "sold_comps_median",
+    metadata: {
+      parallel: "UNSTOPPABLE",
+      baseHint: false,
+      serialNumber: "8/8",
+      printRun: 8,
+    },
+    soldComps: [
+      { title: "Eberechi Eze 2024-25 Panini Prizm Premier League #160 Lucky Envelopes 8/8 PSA 10", totalPrice: 206.5 },
+      { title: "2024-25 Panini Prizm Premier League - Eberechi Eze #160 Blue Ice Prizm /75", totalPrice: 5.07 },
+      { title: "Panini Prizm Premier League 2024-25 Eberechi Eze Auto S-EZE", totalPrice: 30.48 },
+    ],
+    activeListings: [
+      { title: "23-24 Panini Select EPL Unstoppable Eberechi Eze Silver Prizm", totalPrice: 0.99 },
+    ],
+  });
+
+  assert.equal(result.recommendedPrice, 0.99);
+  assert.ok(
+    result.reason.includes("No sold comp confirmed this specific parallel"),
+    `expected the unconfirmed-parallel reason, got: ${result.reason}`,
+  );
+  assert.equal(result.confidence, "low");
+});
+
+test("applyParallelFilterForPricing (via calculatePrice): baseHint no longer disables filtering when a real parallel is also present", () => {
+  // Same setup as the regression above but with only the mismatched sold
+  // comp available (no active data) — confirms the filter itself excludes
+  // the wrong-parallel comp instead of falling back to "Insufficient sold
+  // comps" via a silently-disabled filter mode.
+  const result = calculatePrice({
+    metadata: { parallel: "UNSTOPPABLE", baseHint: true, serialNumber: "8/8", printRun: 8 },
+    soldComps: [
+      { title: "Eberechi Eze 2024-25 Panini Prizm Premier League #160 Lucky Envelopes 8/8 PSA 10", totalPrice: 206.5 },
+    ],
+    activeListings: [],
+  });
+
+  assert.equal(result.evidence.soldParallelFilterMode, "parallel_not_found_all");
+  assert.notEqual(result.evidence.soldParallelFilterMode, "disabled");
+});
+
+test("mergeDetectedMetadata: a confidently-detected specific parallel always clears baseHint, regardless of source", () => {
+  // Reproduces the upstream data bug behind the card_0123 regression: an
+  // earlier pass (or a different detector) had set baseHint true before
+  // "UNSTOPPABLE" was confidently merged in as the parallel.
+  const merged = mergeDetectedMetadata(
+    { baseHint: true, parallel: null },
+    { baseHint: false, parallel: "UNSTOPPABLE", playerName: "Eberechi Eze" },
+    null,
+  );
+  assert.equal(merged.parallel, "UNSTOPPABLE");
+  assert.equal(merged.baseHint, false);
+});
+
+test("mergeDetectedMetadata: baseHint stays true when the merged parallel is weak/generic (e.g. a bare color)", () => {
+  const merged = mergeDetectedMetadata(
+    { baseHint: true, parallel: null },
+    { baseHint: true, parallel: "Silver", playerName: "Some Player" },
+    null,
+  );
+  // "Silver" is a weak/generic parallel label (see isWeakParallelLabel) —
+  // not specific enough to override an existing baseHint on its own.
+  assert.equal(merged.baseHint, true);
 });
