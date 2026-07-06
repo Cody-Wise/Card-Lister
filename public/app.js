@@ -460,9 +460,14 @@ function applyConditionModeToGradeSelect() {
 
 function formatCompSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
-  // "apify" covers cards priced before the switch to SoldComps; both show
-  // the same label since they're the same "direct eBay sold-search" concept.
-  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "SoldComps";
+  // SoldComps.com and CardHedge were both fully removed — the Apify actor
+  // is the sole per-card sold-comp provider now (see README "Known rough
+  // edges"). The stored `source` value is still sometimes the literal
+  // string "soldcomps" for older/legacy records (naming debt from before
+  // the swap back to Apify), so it's normalized to the same label here —
+  // but the label itself should read "Apify", not the deprecated
+  // provider's name, so it doesn't look like SoldComps.com is still in use.
+  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "Apify";
   if (normalized === "browse_active") return "eBay Browse";
   return source || "unknown";
 }
@@ -879,7 +884,10 @@ function listingRepricingStatusLabel(repricing) {
 function listingRepricingSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
   if (normalized === "ebay_image_search") return "eBay comps";
-  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "SoldComps";
+  // See formatCompSourceLabel's comment — SoldComps.com is fully removed;
+  // Apify is the current provider for both "apify" and legacy "soldcomps"
+  // source values.
+  if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "Apify";
   return "Suggested";
 }
 
