@@ -280,3 +280,37 @@ test("mergeDetectedMetadata: baseHint stays true when the merged parallel is wea
   // not specific enough to override an existing baseHint on its own.
   assert.equal(merged.baseHint, true);
 });
+
+test("mergeDetectedMetadata: prefers the year embedded in the set name when it conflicts with a separately-detected year", () => {
+  // Reproduces the live card_0127 bug: front vision, back vision, and a
+  // heuristic text scan each contributed a different field, landing on
+  // year:2023 alongside setName:"2024 PANINI DONRUSS FOOTBALL" — a
+  // self-contradictory pair that produced a comp-search query containing
+  // BOTH years ("2023 Tee Higgins 2024 PANINI DONRUSS FOOTBALL...") and
+  // found zero real sold matches for an otherwise common, liquid card.
+  const merged = mergeDetectedMetadata(
+    {},
+    { year: 2023, setName: "2024 PANINI DONRUSS FOOTBALL", playerName: "Tee Higgins" },
+    null,
+  );
+  assert.equal(merged.year, 2024);
+  assert.equal(merged.setName, "2024 PANINI DONRUSS FOOTBALL");
+});
+
+test("mergeDetectedMetadata: keeps the detected year when the set name has no embedded year at all", () => {
+  const merged = mergeDetectedMetadata(
+    {},
+    { year: 2023, setName: "Prizm", playerName: "Some Player" },
+    null,
+  );
+  assert.equal(merged.year, 2023);
+});
+
+test("mergeDetectedMetadata: keeps the year when it already agrees with the set name's embedded year", () => {
+  const merged = mergeDetectedMetadata(
+    {},
+    { year: 2024, setName: "2024 PANINI DONRUSS FOOTBALL", playerName: "Tee Higgins" },
+    null,
+  );
+  assert.equal(merged.year, 2024);
+});

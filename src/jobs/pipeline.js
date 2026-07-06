@@ -78,6 +78,17 @@ function normalizedCompTitle(value) {
   return cleanTitle(value).toLowerCase();
 }
 
+// Sports-card set names conventionally embed the release year in printed
+// text (e.g. "2024 Panini Donruss Football", "2022-23 Panini Select..."),
+// so a year explicitly present there is a stronger, OCR'd-product-text
+// signal than a separately-detected year field pulled from a different
+// pass (front vision vs. back vision vs. heuristic text scan can each
+// contribute independently and disagree).
+function extractYearFromSetName(setName) {
+  const match = /\b(19|20)\d{2}\b/.exec(String(setName || ""));
+  return match ? Number(match[0]) : null;
+}
+
 function compMentionsPlayer(comp, playerName) {
   const tokens = usefulNameTokens(playerName).map((token) => token.toLowerCase());
   if (!tokens.length) return true;
@@ -566,13 +577,26 @@ export function mergeDetectedMetadata(preserved, heuristic, ebay) {
     isWeakParallelLabel(preserved.parallel) && !isWeakParallelLabel(detected.parallel)
       ? detected.parallel ?? heuristic.parallel ?? preserved.parallel ?? null
       : preserved.parallel ?? detected.parallel ?? heuristic.parallel ?? null;
+  const mergedSetName = preserved.setName ?? detected.setName ?? heuristic.setName ?? null;
+  const mergedYearBeforeSetNameCheck = preserved.year ?? detected.year ?? heuristic.year ?? null;
+  const setNameYear = extractYearFromSetName(mergedSetName);
+  // Confirmed live: a Tee Higgins Donruss card merged year:2023 with
+  // setName:"2024 PANINI DONRUSS FOOTBALL" — two different OCR/vision
+  // passes disagreeing — producing a self-contradictory comp-search query
+  // ("2023 ... 2024 ...") that found zero real sold matches for an
+  // otherwise common, liquid card. Prefer the year embedded in the set
+  // name when the two disagree.
+  const mergedYear =
+    setNameYear && mergedYearBeforeSetNameCheck && setNameYear !== mergedYearBeforeSetNameCheck
+      ? setNameYear
+      : mergedYearBeforeSetNameCheck;
   return {
     ...preserved,
     ...heuristic,
     ...detected,
     playerName: preserved.playerName ?? detected.playerName ?? heuristic.playerName ?? null,
-    year: preserved.year ?? detected.year ?? heuristic.year ?? null,
-    setName: preserved.setName ?? detected.setName ?? heuristic.setName ?? null,
+    year: mergedYear,
+    setName: mergedSetName,
     cardNumber: preferredCardNumber,
     parallel: mergedParallel,
     // A confidently-detected, specific parallel (not a weak/generic label —
