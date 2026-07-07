@@ -160,7 +160,17 @@ export async function respondToBestOffer({ itemId, bestOfferId, action, counterO
 // Extracts the legacy numeric ItemID the Trading API needs from an eBay
 // listing URL (e.g. "https://www.ebay.com/itm/236917541201" -> "236917541201").
 export function extractItemIdFromListingUrl(listingUrl) {
-  const match = /\/itm\/(\d+)/.exec(String(listingUrl || ""));
+  // eBay listing URLs come in two real shapes: bare (".../itm/236917541201")
+  // and SEO-friendly with a title slug before the ID
+  // (".../itm/2024-25-Panini-Select-.../236298326630"). The old
+  // /\/itm\/(\d+)/ pattern matched the FIRST run of digits after "/itm/" —
+  // for a slugged URL starting with a year (extremely common for sports
+  // cards), that's the year, not the item ID. Confirmed live: this sent
+  // "2024" as the itemId to RespondToBestOffer, which eBay correctly
+  // rejected as an invalid item. The real numeric ID is always the LAST
+  // path segment, so anchor the match there instead.
+  const pathOnly = String(listingUrl || "").split("?")[0];
+  const match = /\/itm\/(?:[^/]*\/)?(\d+)\/?$/.exec(pathOnly);
   return match ? match[1] : null;
 }
 

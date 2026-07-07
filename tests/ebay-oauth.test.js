@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exchangeEbayCode, refreshEbayToken, setEbayConfig, TRADING_AUTH_FAILURE_PATTERN } from "../src/services/ebay.js";
+import {
+  exchangeEbayCode,
+  refreshEbayToken,
+  setEbayConfig,
+  TRADING_AUTH_FAILURE_PATTERN,
+  extractListingIdFromUrl,
+} from "../src/services/ebay.js";
 
 // These exercise the eBay OAuth token exchange/refresh flows end-to-end
 // against a mocked fetch boundary — real request shape (Basic auth header,
@@ -238,4 +244,27 @@ test("TRADING_AUTH_FAILURE_PATTERN matches the real live error message (confirme
 test("TRADING_AUTH_FAILURE_PATTERN doesn't match an unrelated Trading API failure", () => {
   assert.ok(!TRADING_AUTH_FAILURE_PATTERN.test("Item not found."));
   assert.ok(!TRADING_AUTH_FAILURE_PATTERN.test("Best Offer not found."));
+});
+
+test("extractListingIdFromUrl pulls the trailing numeric ID from an SEO-slugged URL, not the leading year", () => {
+  // Same real live bug as ebay-best-offers.js's extractItemIdFromListingUrl
+  // (RespondToBestOffer Accept failed with 'Item "2024" is invalid') — this
+  // is a second, independent copy of the same too-narrow regex.
+  assert.equal(
+    extractListingIdFromUrl(
+      "https://www.ebay.com/itm/2024-25-Panini-Select-Neon-Icons-Victor-Wembanyama-23/236298326630",
+    ),
+    "236298326630",
+  );
+});
+
+test("extractListingIdFromUrl still handles a bare URL and a query string", () => {
+  assert.equal(extractListingIdFromUrl("https://www.ebay.com/itm/236917541201"), "236917541201");
+  assert.equal(extractListingIdFromUrl("https://www.ebay.com/itm/236917541201?nordt=true"), "236917541201");
+});
+
+test("extractListingIdFromUrl returns null for a missing/non-matching URL", () => {
+  assert.equal(extractListingIdFromUrl(""), null);
+  assert.equal(extractListingIdFromUrl(null), null);
+  assert.equal(extractListingIdFromUrl("https://www.ebay.com/sch/i.html?_nkw=x"), null);
 });

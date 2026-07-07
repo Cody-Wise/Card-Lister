@@ -210,10 +210,19 @@ function toCountValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function extractListingIdFromUrl(url) {
+export function extractListingIdFromUrl(url) {
   const raw = String(url || "").trim();
   if (!raw) return null;
-  const match = raw.match(/\/itm\/(\d+)/i);
+  // eBay listing URLs are either bare (".../itm/236917541201") or
+  // SEO-friendly with a title slug before the ID
+  // (".../itm/2024-25-Panini-Select-.../236298326630") — the real numeric
+  // ID is always the LAST path segment. Matching the first run of digits
+  // after "/itm/" (the old pattern) grabs the leading year out of a
+  // slugged URL instead, which is wrong far more often than not for sports
+  // cards. See the identical fix + live repro in ebay-best-offers.js's
+  // extractItemIdFromListingUrl.
+  const pathOnly = raw.split("?")[0];
+  const match = /\/itm\/(?:[^/]*\/)?(\d+)\/?$/i.exec(pathOnly);
   return match?.[1] || null;
 }
 
