@@ -1370,7 +1370,15 @@ function normalizeTradingListingType(value) {
   return "FIXED_PRICE";
 }
 
-async function requestTradingEbay(callName, xmlBody) {
+// Confirmed live: the Trading API reports an expired/invalid access token as
+// HTTP 200 with Ack=Failure and a message like "Auth token is hard expired,
+// User needs to generate a new token for this application." — NOT an HTTP
+// 401 the way the REST API does. The old response.status === 401 check
+// never caught this at all, so a stale-but-refreshable access token just
+// threw immediately instead of refreshing and retrying once.
+export const TRADING_AUTH_FAILURE_PATTERN = /hard expired|invalid access token|expired iaf token|generate a new token/i;
+
+async function requestTradingEbay(callName, xmlBody, { retryOnExpiredToken = true } = {}) {
   const config = getConfig();
   const url = `${config.baseUrl}/ws/api.dll`;
   const headers = {
@@ -1388,16 +1396,17 @@ async function requestTradingEbay(callName, xmlBody) {
     body: xmlBody,
   });
   const text = await response.text();
+  const ack = xmlTagValue(text, "Ack");
+  const isAuthFailure = response.status === 401 || (ack === "Failure" && TRADING_AUTH_FAILURE_PATTERN.test(text));
 
-  if (response.status === 401) {
+  if (isAuthFailure && retryOnExpiredToken) {
     const hasRefreshToken = Boolean(runtimeOverrides.refreshToken || process.env.EBAY_REFRESH_TOKEN);
     if (hasRefreshToken) {
       await refreshEbayToken();
-      return requestTradingEbay(callName, xmlBody);
+      return requestTradingEbay(callName, xmlBody, { retryOnExpiredToken: false });
     }
   }
 
-  const ack = xmlTagValue(text, "Ack");
   if (!response.ok || (ack && !/success|warning/i.test(ack))) {
     const longMessages = xmlTagValues(text, "LongMessage");
     const shortMessages = xmlTagValues(text, "ShortMessage");

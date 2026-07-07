@@ -63,7 +63,11 @@ async function callTradingApi(callName, bodyXml, { retryOnExpiredToken = true } 
   // Trading API reports an expired/invalid IAF token as Ack=Failure inside
   // a 200 response, not an HTTP 401 — same underlying condition
   // requestEbay() handles for the REST API, just surfaced differently.
-  if (retryOnExpiredToken && /expired iaf token/i.test(text)) {
+  // Confirmed live the real message is "Auth token is hard expired, User
+  // needs to generate a new token for this application." — no "iaf" in it
+  // at all, so the original narrower pattern never matched and this whole
+  // retry path was silently dead code until now.
+  if (retryOnExpiredToken && /hard expired|invalid access token|expired iaf token|generate a new token/i.test(text)) {
     await refreshEbayToken();
     return callTradingApi(callName, bodyXml, { retryOnExpiredToken: false });
   }

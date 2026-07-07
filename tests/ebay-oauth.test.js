@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exchangeEbayCode, refreshEbayToken, setEbayConfig } from "../src/services/ebay.js";
+import { exchangeEbayCode, refreshEbayToken, setEbayConfig, TRADING_AUTH_FAILURE_PATTERN } from "../src/services/ebay.js";
 
 // These exercise the eBay OAuth token exchange/refresh flows end-to-end
 // against a mocked fetch boundary — real request shape (Basic auth header,
@@ -221,4 +221,21 @@ test("refreshEbayToken throws immediately when there's no refresh token to use",
       if (originalRefreshTokenEnv !== undefined) process.env.EBAY_REFRESH_TOKEN = originalRefreshTokenEnv;
     }
   });
+});
+
+test("TRADING_AUTH_FAILURE_PATTERN matches the real live error message (confirmed 2026-07-08)", () => {
+  // requestTradingEbay's old retry condition was response.status === 401
+  // only — but the Trading API reports this as HTTP 200 with Ack=Failure,
+  // so the retry never fired at all. Guards against the pattern being
+  // narrowed back down to something that misses this real message.
+  assert.ok(
+    TRADING_AUTH_FAILURE_PATTERN.test(
+      "Auth token is hard expired, User needs to generate a new token for this application.",
+    ),
+  );
+});
+
+test("TRADING_AUTH_FAILURE_PATTERN doesn't match an unrelated Trading API failure", () => {
+  assert.ok(!TRADING_AUTH_FAILURE_PATTERN.test("Item not found."));
+  assert.ok(!TRADING_AUTH_FAILURE_PATTERN.test("Best Offer not found."));
 });
