@@ -13,8 +13,19 @@ import {
   importState,
 } from "./lib/store.js";
 import { saveImageRecord } from "./lib/storage.js";
-import { processBatch, processCardItem } from "./jobs/pipeline.js";
+import {
+  processBatch,
+  processCardItem,
+  filterExactMatchComps,
+  resolveGradeTarget,
+} from "./jobs/pipeline.js";
 import { getLiveCardComps } from "./services/comps.js";
+import {
+  getBestOffersForListing,
+  extractItemIdFromListingUrl,
+  getBestOffersSnapshot,
+  saveBestOffersSnapshot,
+} from "./services/ebay-best-offers.js";
 import {
   fetchEbayActiveListings,
   fetchEbayFulfillmentOrders,
@@ -1401,6 +1412,118 @@ function scheduleOfferExternalRepriceHydration({ listingId, sku, titleHint = "",
   setTimeout(() => {
     void drainOfferExternalRepriceQueue();
   }, 0);
+}
+
+let bestOffersRefreshInProgress = false;
+
+function isBestOfferEligible(card, offer) {
+  return (
+    card &&
+    card.status !== "sold" &&
+    (card.publishState === "published" || card.status === "listed") &&
+    Boolean(offer?.listingUrl)
+  );
+}
+
+// Buyer-side counterpart to buildManualRepricingSignal's overpriced/
+// underpriced/aligned framing: judges whether an incoming Best Offer is
+// reasonable against the SAME exact-match-gated comp evidence the scheduled
+// repricer requires (see filterExactMatchComps/resolveGradeTarget in
+// pipeline.js) — an unconfirmed match is reported as such rather than
+// guessing, same discipline as the repricer.
+function assessBestOffer(offerAmount, pricingSummary, hasExactMatch) {
+  if (!hasExactMatch || !pricingSummary) {
+    return { verdict: "unconfirmed", reason: "No exact-match comps found — reasonableness can't be confirmed." };
+  }
+  const low = Number.isFinite(pricingSummary.low) ? pricingSummary.low : pricingSummary.compPrice;
+  const high = Number.isFinite(pricingSummary.high) ? pricingSummary.high : pricingSummary.compPrice;
+  if (Number.isFinite(low) && offerAmount < low) {
+    return { verdict: "below_market", reason: `Offer is below the confirmed comp range ($${low}-$${high}).` };
+  }
+  if (Number.isFinite(high) && offerAmount > high) {
+    return { verdict: "above_market", reason: `Offer is above the confirmed comp range ($${low}-$${high}).` };
+  }
+  return { verdict: "within_range", reason: `Offer falls within the confirmed comp range ($${low}-$${high}).` };
+}
+
+// Fetches pending Best Offers for every eligible published listing (Trading
+// API — see src/services/ebay-best-offers.js) and, for each one found, runs
+// a fresh exact-match-gated comp lookup to judge whether it's reasonable.
+// Runs with the same bounded concurrency + no-lock-held-during-network-I/O
+// shape as reprice-scheduler.js's repriceUnsoldListings.
+async function refreshBestOffers() {
+  const candidates = await withStateReadOnly(async (state) => {
+    const offerByCardId = new Map();
+    for (const offer of state.offers || []) {
+      if (offer?.cardItemId) offerByCardId.set(offer.cardItemId, offer);
+    }
+    return (state.cardItems || [])
+      .map((card) => ({ card: { ...card }, offer: offerByCardId.get(card.id) ? { ...offerByCardId.get(card.id) } : null }))
+      .filter(({ card, offer }) => isBestOfferEligible(card, offer));
+  });
+
+  const entries = [];
+  const concurrency = 3;
+  const queue = [...candidates];
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
+      while (queue.length) {
+        const { card, offer } = queue.shift();
+        const itemId = extractItemIdFromListingUrl(offer.listingUrl);
+        if (!itemId) continue;
+        try {
+          const bestOffers = await getBestOffersForListing(itemId);
+          if (!bestOffers.length) continue;
+
+          const imageUrl = pickImageUrl(offer?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
+          const lookupMetadata = buildExternalCompLookupMetadata(card, offer?.ebayTitle || "", imageUrl);
+          const lookupResult = await withTimeout(
+            getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
+            20000,
+            "Best Offer comp lookup",
+          );
+          const gradeTarget = resolveGradeTarget(card);
+          const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
+          const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
+          const pricingSummary = buildEbayPricingSummary(card, filteredSold, filteredActive);
+          const parallelConfirmed =
+            !lookupMetadata.parallel ||
+            pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
+            pricingSummary?.soldParallelFilterMode === "similar_parallel";
+          const hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
+
+          for (const bestOffer of bestOffers) {
+            const assessment = assessBestOffer(bestOffer.price, pricingSummary, hasExactMatch);
+            entries.push({
+              cardId: card.id,
+              offerId: offer.id,
+              listingUrl: offer.listingUrl,
+              cardTitle: offer.ebayTitle || card.ebayTitle || "",
+              currentPrice: normalizeSalesCurrencyValue(offer.price ?? card.recommendedPrice),
+              bestOfferId: bestOffer.bestOfferId,
+              offerAmount: bestOffer.price,
+              buyerUserId: bestOffer.buyerUserId,
+              expirationTime: bestOffer.expirationTime,
+              compLow: pricingSummary?.low ?? null,
+              compHigh: pricingSummary?.high ?? null,
+              verdict: assessment.verdict,
+              verdictReason: assessment.reason,
+            });
+          }
+        } catch (error) {
+          entries.push({
+            cardId: card.id,
+            offerId: offer.id,
+            listingUrl: offer.listingUrl,
+            error: error.message,
+          });
+        }
+      }
+    }),
+  );
+
+  await saveBestOffersSnapshot(entries);
+  return entries;
 }
 
 export function resolveCardFromSalesLine({
@@ -3098,6 +3221,25 @@ export async function handler(req, res) {
 
       return sendJson(res, 200, { listing: result });
     });
+  }
+
+  if (req.method === "GET" && pathname === "/api/best-offers") {
+    const snapshot = await getBestOffersSnapshot();
+    return sendJson(res, 200, snapshot);
+  }
+
+  if (req.method === "POST" && pathname === "/api/best-offers/refresh") {
+    if (bestOffersRefreshInProgress) {
+      return sendJson(res, 409, { error: "A Best Offers refresh is already in progress — try again shortly." });
+    }
+    bestOffersRefreshInProgress = true;
+    sendJson(res, 202, { ok: true, message: "Refresh started" });
+    refreshBestOffers()
+      .catch((error) => console.error("[best-offers] refresh failed:", error.message))
+      .finally(() => {
+        bestOffersRefreshInProgress = false;
+      });
+    return;
   }
 
   if (req.method === "POST" && pathname === "/api/ebay/listings/reprice") {

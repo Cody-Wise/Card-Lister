@@ -1329,7 +1329,7 @@ function xmlEscape(value) {
     .replace(/'/g, "&apos;");
 }
 
-function decodeXmlEntities(value) {
+export function decodeXmlEntities(value) {
   return String(value || "")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -1338,12 +1338,12 @@ function decodeXmlEntities(value) {
     .replace(/&amp;/g, "&");
 }
 
-function xmlTagValue(xml, tagName) {
+export function xmlTagValue(xml, tagName) {
   const match = String(xml || "").match(new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, "i"));
   return match ? decodeXmlEntities(match[1].trim()) : null;
 }
 
-function xmlTagValues(xml, tagName) {
+export function xmlTagValues(xml, tagName) {
   return [...String(xml || "").matchAll(new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, "gi"))]
     .map((match) => decodeXmlEntities(match[1].trim()));
 }

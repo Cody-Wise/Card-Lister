@@ -27,6 +27,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="8" cy="14" r="1.5"/><path d="M12.5 13h5"/><path d="M12.5 15h3"/></svg>
             TCG
           </button>
+          <button class="nav-item" data-tab="best-offers">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 6 6 1-4.5 4.5L17.5 20 12 17l-5.5 3 1-6.5L3 9l6-1z"/></svg>
+            Best Offers
+          </button>
           <button class="nav-item" data-tab="sales">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3z"/><path d="M5 3v18"/><path d="M9 9h10"/><path d="M9 13h10"/><path d="M9 17h10"/></svg>
             Sales
@@ -208,6 +212,23 @@
 
           <div class="card-grid" id="tcgCardsList">
             <div class="empty-state">No TCG cards imported yet</div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-best-offers">
+          <header class="section-header">
+            <h2>Best Offers</h2>
+            <div class="header-actions">
+              <span id="bestOffersGeneratedAt" class="msg muted"></span>
+              <button class="btn btn-ghost" id="bestOffersRefreshButton">Refresh</button>
+            </div>
+          </header>
+          <p class="muted">
+            Pulls buyer-submitted Best Offers from eBay and checks each against fresh, exact-match comps
+            (same match bar as the auto-repricer) to flag whether it's reasonable.
+          </p>
+          <div id="bestOffersList">
+            <div class="empty-state">No Best Offers data yet — click Refresh.</div>
           </div>
         </div>
 

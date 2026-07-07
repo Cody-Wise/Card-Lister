@@ -206,6 +206,10 @@ const daCardWorldUpdatedAt = document.getElementById("daCardWorldUpdatedAt");
 const daCardWorldNewReleases = document.getElementById("daCardWorldNewReleases");
 const daCardWorldDeals = document.getElementById("daCardWorldDeals");
 
+const bestOffersRefreshButton = document.getElementById("bestOffersRefreshButton");
+const bestOffersGeneratedAt = document.getElementById("bestOffersGeneratedAt");
+const bestOffersList = document.getElementById("bestOffersList");
+
 const gradingRefreshButton = document.getElementById("gradingRefreshButton");
 const gradingDriveFolderId = document.getElementById("gradingDriveFolderId");
 gradingDriveFolderId.value = readUiStorage(GRADING_DRIVE_FOLDER_STORAGE_KEY) || "";
@@ -2001,6 +2005,80 @@ if (daCardWorldRefreshButton) {
   });
 }
 
+/* ── Best Offers tab ── */
+// Seller's-perspective framing: an offer above or within the confirmed comp
+// range is a fine deal (good); below market means the buyer is lowballing
+// (bad); unconfirmed means there wasn't enough exact-match evidence to judge
+// either way (warn), same "don't guess" discipline as the auto-repricer.
+const BEST_OFFER_VERDICT_LABELS = {
+  below_market: "Below market",
+  within_range: "Within range",
+  above_market: "Above market",
+  unconfirmed: "Unconfirmed",
+};
+const BEST_OFFER_VERDICT_CLASSES = {
+  below_market: "bad",
+  within_range: "good",
+  above_market: "good",
+  unconfirmed: "warn",
+};
+
+function renderBestOfferEntry(entry) {
+  if (entry.error) {
+    return `<article class="sales-card"><div>${salesEscape(entry.cardTitle || entry.cardId)}</div><div class="msg" style="color:#e88">${salesEscape(entry.error)}</div></article>`;
+  }
+  const verdictLabel = BEST_OFFER_VERDICT_LABELS[entry.verdict] || entry.verdict;
+  const verdictClass = BEST_OFFER_VERDICT_CLASSES[entry.verdict] || "warn";
+  const range = Number.isFinite(entry.compLow) && Number.isFinite(entry.compHigh)
+    ? `${formatSalesMoney(entry.compLow)} - ${formatSalesMoney(entry.compHigh)}`
+    : "n/a";
+  return `<article class="sales-card">
+    <div class="dacardworld-item-title">
+      <a href="${salesEscape(entry.listingUrl)}" target="_blank" rel="noopener">${salesEscape(entry.cardTitle || entry.cardId)}</a>
+      <span class="badge ${verdictClass}">${salesEscape(verdictLabel)}</span>
+    </div>
+    <div class="muted">
+      Offer: ${formatSalesMoney(entry.offerAmount)} · Listed: ${formatSalesMoney(entry.currentPrice)} · Comp range: ${range}
+    </div>
+    <div class="muted">${salesEscape(entry.verdictReason || "")}</div>
+  </article>`;
+}
+
+function renderBestOffersList(data) {
+  if (!bestOffersList) return;
+  const entries = Array.isArray(data?.entries) ? data.entries : [];
+  bestOffersGeneratedAt.textContent = data?.generatedAt
+    ? `Last checked ${new Date(data.generatedAt).toLocaleString()}`
+    : "Never checked yet — click Refresh.";
+  if (!entries.length) {
+    bestOffersList.innerHTML = `<div class="empty-state">No pending Best Offers found.</div>`;
+    return;
+  }
+  bestOffersList.innerHTML = entries.map(renderBestOfferEntry).join("");
+}
+
+async function loadBestOffers() {
+  try {
+    const data = await api("/api/best-offers");
+    renderBestOffersList(data);
+  } catch (e) {
+    if (bestOffersGeneratedAt) bestOffersGeneratedAt.textContent = e.message;
+  }
+}
+
+if (bestOffersRefreshButton) {
+  bestOffersRefreshButton.addEventListener("click", async () => {
+    bestOffersGeneratedAt.textContent = "Refreshing...";
+    try {
+      await api("/api/best-offers/refresh", { method: "POST" });
+      bestOffersGeneratedAt.textContent = "Refresh started — check back shortly.";
+      setTimeout(loadBestOffers, 15000);
+    } catch (e) {
+      bestOffersGeneratedAt.textContent = e.message;
+    }
+  });
+}
+
 /* ── Tab navigation ── */
 document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -2029,6 +2107,10 @@ document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
     }
     if (btn.dataset.tab === "dacardworld" && !daCardWorldNewReleases?.innerHTML) {
       loadDaCardWorldSnapshot();
+    }
+    if (btn.dataset.tab === "best-offers" && bestOffersList && !bestOffersList.dataset.loaded) {
+      bestOffersList.dataset.loaded = "1";
+      loadBestOffers();
     }
   });
 });

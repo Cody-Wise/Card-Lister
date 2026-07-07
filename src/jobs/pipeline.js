@@ -3,6 +3,7 @@ import { matchCardIdentity } from "../services/matching.js";
 import { getLiveCardComps } from "../services/comps.js";
 import { buildApifyLookupKey, hasApifyConfig, searchApifySoldListings } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
+import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
 import { createAuditEvent, createId, nowIso, withState, withStateReadOnly } from "../lib/store.js";
 
 function dedupeComps(comps) {
@@ -159,6 +160,45 @@ export function isRelevantComp(comp, metadata) {
     compMatchesCardNumber(comp, metadata?.cardNumber) &&
     compMatchesSet(comp, metadata?.setName)
   );
+}
+
+// A comp is only usable "exact match" evidence when it's confirmed to be the
+// SAME grading state as the target card — comparing a raw card's price
+// against a PSA-10 slab's (or vice versa) isn't a real match no matter how
+// well player/year/set/card-number line up. Confirmed live: this exact gap
+// let a raw-vs-graded (or wrong-grade) comp anchor a wildly wrong scheduled
+// reprice target on a PSA-10 Kyler Murray (see reprice-scheduler.js). Kept
+// dependency-free here (not in reprice-scheduler.js, which imports from
+// app.js) so it can be reused by any caller — including best-offer-routes.js
+// — without a circular import back through app.js.
+export function matchesTargetGrade(comp, gradeTarget) {
+  const { grader: compGrader, grade: compGrade } = extractGraderAndGradeFromTitle(comp?.title || "");
+  const compIsGraded = Boolean(compGrader && compGrade);
+  if (gradeTarget.isGraded !== compIsGraded) return false;
+  if (!gradeTarget.isGraded) return true; // both raw — nothing further to compare
+  if (gradeTarget.grader && compGrader && gradeTarget.grader !== compGrader) return false;
+  if (gradeTarget.grade && compGrade && gradeTarget.grade !== compGrade) return false;
+  return true;
+}
+
+// Filters comps down to ones that pass BOTH isRelevantComp (player/year/
+// card-number/set) AND the grade-match check above — the "exact match" bar
+// required before any comp is trusted for an unattended price decision
+// (auto-reprice or a Best-Offer reasonableness verdict).
+export function filterExactMatchComps(comps, lookupMetadata, gradeTarget) {
+  return (Array.isArray(comps) ? comps : []).filter(
+    (comp) => isRelevantComp(comp, lookupMetadata) && matchesTargetGrade(comp, gradeTarget),
+  );
+}
+
+// Resolves the { isGraded, grader, grade } shape filterExactMatchComps needs
+// from a card record — shared so callers don't each reimplement the
+// graded-flag/resolveGraderAndGrade combination.
+export function resolveGradeTarget(card = {}) {
+  const isGraded = card?.candidateCondition === "graded" || Boolean(card?.gradedFlag);
+  return isGraded
+    ? { isGraded: true, ...resolveGraderAndGrade(card) }
+    : { isGraded: false, grader: null, grade: null };
 }
 
 function buildExternalPricingSummary(pricing = {}, soldComps = [], activeListings = [], source = "ebay_image_search") {

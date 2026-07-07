@@ -16,8 +16,7 @@
 // would.
 import { getLiveCardComps } from "../services/comps.js";
 import { updateEbayListingPrice } from "../services/ebay.js";
-import { isRelevantComp } from "./pipeline.js";
-import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
+import { filterExactMatchComps, resolveGradeTarget } from "./pipeline.js";
 import {
   buildExternalCompLookupMetadata,
   buildOfferExternalCompLookupMetadata,
@@ -71,32 +70,14 @@ function lookupTimeoutMs() {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
 }
 
-// A comp is only usable evidence for the auto-repricer when it's confirmed
-// to be the SAME grading state as the target card — comparing a raw card's
-// price against a PSA-10 slab's (or vice versa) isn't a real match no matter
-// how well player/year/set/card-number line up. Confirmed live: this exact
-// gap let a raw-vs-graded (or wrong-grade) comp anchor a wildly wrong
-// scheduled reprice target on a PSA-10 Kyler Murray.
-export function matchesTargetGrade(comp, gradeTarget) {
-  const { grader: compGrader, grade: compGrade } = extractGraderAndGradeFromTitle(comp?.title || "");
-  const compIsGraded = Boolean(compGrader && compGrade);
-  if (gradeTarget.isGraded !== compIsGraded) return false;
-  if (!gradeTarget.isGraded) return true; // both raw — nothing further to compare
-  if (gradeTarget.grader && compGrader && gradeTarget.grader !== compGrader) return false;
-  if (gradeTarget.grade && compGrade && gradeTarget.grade !== compGrade) return false;
-  return true;
-}
-
-// Filters comps down to ones that pass BOTH the same core-identity relevance
-// check the main pricing pipeline already relies on (isRelevantComp — player/
-// year/card-number/set) AND the grade-match check above. This is the
-// "exact match" bar the scheduler requires before it's allowed to touch a
-// live price with no human review.
-export function filterExactMatchComps(comps, lookupMetadata, gradeTarget) {
-  return (Array.isArray(comps) ? comps : []).filter(
-    (comp) => isRelevantComp(comp, lookupMetadata) && matchesTargetGrade(comp, gradeTarget),
-  );
-}
+// matchesTargetGrade/filterExactMatchComps/resolveGradeTarget live in
+// pipeline.js (see the "exact match" gate there) rather than here, since
+// they're dependency-free and also needed by
+// src/routes/best-offer-routes.js — this file already imports from app.js,
+// so keeping them here would create a circular import once a route file
+// (which app.js mounts) needed them too. Re-exported for this file's
+// existing tests/callers.
+export { matchesTargetGrade, filterExactMatchComps } from "./pipeline.js";
 
 // Absolute per-card min/max always wins over the relative +/-20% band, when
 // set. Pulled out as a pure function so the override behavior is directly
@@ -156,10 +137,7 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     "eBay image search sold comp lookup",
   );
 
-  const isGraded = card?.candidateCondition === "graded" || Boolean(card?.gradedFlag);
-  const gradeTarget = isGraded
-    ? { isGraded: true, ...resolveGraderAndGrade(card || {}) }
-    : { isGraded: false, grader: null, grade: null };
+  const gradeTarget = resolveGradeTarget(card || {});
   const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
   const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
 

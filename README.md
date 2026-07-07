@@ -54,6 +54,7 @@ This project is a Node.js web app for ingesting card images, extracting metadata
 | [src/routes/grading-routes.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/routes/grading-routes.js) | Grading tab's review-queue routes (`/api/grading/*`) — pull from Drive, submit for AI grading, transfer to the listing pipeline, discard |
 | [src/services/dacardworld.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/dacardworld.js) | DA Card World watcher — Playwright + CapSolver scrape, raw-row normalization, cache read/write |
 | [src/routes/dacardworld-routes.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/routes/dacardworld-routes.js) | DA Card World tab's routes (`/api/dacardworld*`) — cached snapshot + guarded manual refresh |
+| [src/services/ebay-best-offers.js](/Users/codywise/Desktop/Projects/Personal/automatic-sports-card-listing-i-want/src/services/ebay-best-offers.js) | Best Offers tab's Trading API `GetBestOffers` client (buyer-submitted offer retrieval + parsing) |
 
 ## Runtime model
 
@@ -165,6 +166,31 @@ Foundation-grid template and a Tailwind-based deals template) was done from
 a single research pass over real rendered pages, not a full live-solved run
 — if a refresh ever comes back with zero items for a section, that's the
 first thing to check.
+
+### Best Offers tab
+
+A "Best Offers" tab pulls in buyer-submitted Best Offers on published
+listings and judges whether each is reasonable against fresh comps. Best
+Offer retrieval is **Trading API only** — confirmed against eBay's own docs
+that there's no REST equivalent for reading/responding to buyer-submitted
+offers (the REST Inventory API can only *enable* Best Offer on a listing,
+which this app already does via `bestOfferTerms.bestOfferEnabled`). The
+existing OAuth user access token works directly against the Trading API by
+sending it as the `X-EBAY-API-IAF-TOKEN` header instead of the legacy
+`RequesterCredentials` — confirmed live, no separate re-authorization
+needed. See [src/services/ebay-best-offers.js](src/services/ebay-best-offers.js)
+for the `GetBestOffers` call + response parsing.
+
+Each fetched offer is judged using the *same* exact-match comp-filtering
+the scheduled repricer requires
+([src/jobs/pipeline.js](src/jobs/pipeline.js)'s `filterExactMatchComps`/
+`resolveGradeTarget` — player/year/card-number/set match plus a grade match
+for graded cards) — an offer is reported "unconfirmed" rather than judged
+against unrelated comps when no exact match exists. `POST
+/api/best-offers/refresh` runs in the background (202 response) and caches
+results to `data/best-offers-cache.json`; `GET /api/best-offers` returns
+the cached snapshot. v1 is view/assess only — no in-app accept/decline
+(`RespondToBestOffer`) automation yet.
 
 ## Current card processing pipeline
 
