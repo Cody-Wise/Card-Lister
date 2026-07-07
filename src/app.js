@@ -1462,7 +1462,11 @@ async function refreshBestOffers() {
     };
   });
 
-  const activeListings = await fetchEbayActiveListings({ offers: trackedOffers, pageSize: 100, maxPages: 5 });
+  // pageSize 200 (the Trading/Inventory API max) x maxPages 5 = up to 1000
+  // listings — comfortably covers a large active seller account (confirmed
+  // this one currently has ~850 live listings; the old 100 x 5 = 500 cap
+  // would have silently missed roughly 350 of them).
+  const activeListings = await fetchEbayActiveListings({ offers: trackedOffers, pageSize: 200, maxPages: 5 });
   // Not pre-filtered by listing.bestOfferEnabled — confirmed live that
   // GetMyeBaySelling's ActiveList doesn't reliably return BestOfferDetails
   // at all (even with DetailLevel=ReturnAll), so that flag can't be trusted
