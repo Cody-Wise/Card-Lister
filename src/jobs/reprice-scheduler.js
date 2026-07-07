@@ -16,6 +16,8 @@
 // would.
 import { getLiveCardComps } from "../services/comps.js";
 import { updateEbayListingPrice } from "../services/ebay.js";
+import { isRelevantComp } from "./pipeline.js";
+import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
 import {
   buildExternalCompLookupMetadata,
   buildOfferExternalCompLookupMetadata,
@@ -69,6 +71,42 @@ function lookupTimeoutMs() {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
 }
 
+// A comp is only usable evidence for the auto-repricer when it's confirmed
+// to be the SAME grading state as the target card — comparing a raw card's
+// price against a PSA-10 slab's (or vice versa) isn't a real match no matter
+// how well player/year/set/card-number line up. Confirmed live: this exact
+// gap let a raw-vs-graded (or wrong-grade) comp anchor a wildly wrong
+// scheduled reprice target on a PSA-10 Kyler Murray.
+export function matchesTargetGrade(comp, gradeTarget) {
+  const { grader: compGrader, grade: compGrade } = extractGraderAndGradeFromTitle(comp?.title || "");
+  const compIsGraded = Boolean(compGrader && compGrade);
+  if (gradeTarget.isGraded !== compIsGraded) return false;
+  if (!gradeTarget.isGraded) return true; // both raw — nothing further to compare
+  if (gradeTarget.grader && compGrader && gradeTarget.grader !== compGrader) return false;
+  if (gradeTarget.grade && compGrade && gradeTarget.grade !== compGrade) return false;
+  return true;
+}
+
+// Filters comps down to ones that pass BOTH the same core-identity relevance
+// check the main pricing pipeline already relies on (isRelevantComp — player/
+// year/card-number/set) AND the grade-match check above. This is the
+// "exact match" bar the scheduler requires before it's allowed to touch a
+// live price with no human review.
+export function filterExactMatchComps(comps, lookupMetadata, gradeTarget) {
+  return (Array.isArray(comps) ? comps : []).filter(
+    (comp) => isRelevantComp(comp, lookupMetadata) && matchesTargetGrade(comp, gradeTarget),
+  );
+}
+
+// Absolute per-card min/max always wins over the relative +/-20% band, when
+// set. Pulled out as a pure function so the override behavior is directly
+// testable without mocking the network calls the rest of computeReprice makes.
+export function applyAbsoluteBounds(price, minPrice, maxPrice) {
+  const min = Number.isFinite(minPrice) && minPrice > 0 ? minPrice : -Infinity;
+  const max = Number.isFinite(maxPrice) && maxPrice > 0 ? maxPrice : Infinity;
+  return Math.min(max, Math.max(min, price));
+}
+
 // A card is a repricing candidate when it's live on eBay (published) and not
 // yet sold.
 function isRepriceable(card) {
@@ -118,8 +156,15 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     "eBay image search sold comp lookup",
   );
 
+  const isGraded = card?.candidateCondition === "graded" || Boolean(card?.gradedFlag);
+  const gradeTarget = isGraded
+    ? { isGraded: true, ...resolveGraderAndGrade(card || {}) }
+    : { isGraded: false, grader: null, grade: null };
+  const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
+  const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
+
   const summaryRecord = card || offer || {};
-  const pricingSummary = buildEbayPricingSummary(summaryRecord, lookupResult.sold, lookupResult.active);
+  const pricingSummary = buildEbayPricingSummary(summaryRecord, filteredSold, filteredActive);
 
   if (offer) {
     if (imageUrl && !offer.imageUrl) offer.imageUrl = imageUrl;
@@ -133,7 +178,7 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
   }
   if (card) {
     card.externalCompLookupAttemptedAt = nowIso();
-    card.externalSoldComps = Array.isArray(lookupResult.sold) ? lookupResult.sold.slice(0, 50) : [];
+    card.externalSoldComps = filteredSold.slice(0, 50);
     card.externalCompSource = "ebay_image_search";
     card.externalPricingSummary = pricingSummary;
     card.externalCompUpdatedAt = nowIso();
@@ -141,11 +186,48 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     delete card.apifyError;
   }
 
+  // Exact-match gate: at least one relevance+grade-filtered sold comp, and —
+  // when the card has a specific parallel — that parallel must have been
+  // confirmed (exact/similar), not just passed through unfiltered. No human
+  // reviews this job's price pushes, so an unconfirmed match is a skip, not
+  // a best-effort guess.
+  const parallelConfirmed =
+    !lookupMetadata.parallel ||
+    pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
+    pricingSummary?.soldParallelFilterMode === "similar_parallel";
+  const isExactMatch = filteredSold.length > 0 && parallelConfirmed;
+
+  // Anchor the relative +/-20% clamp to a stable baseline captured once,
+  // rather than the current (possibly already-drifted) price — otherwise
+  // repeated cycles compound instead of holding a line. Confirmed live: a
+  // PSA-10 card ratcheted up 20% every single 6-hour run for a week straight
+  // toward a wrong target, since each run's clamp used the prior run's
+  // already-inflated price as its new base.
+  if (card && !(Number.isFinite(card.repriceBaselinePrice) && card.repriceBaselinePrice > 0)) {
+    card.repriceBaselinePrice = currentPrice;
+  }
+  const baselinePrice = card?.repriceBaselinePrice || currentPrice;
+
   const repricing = buildManualRepricingSignal(card, offer, currentPrice);
+
+  if (!isExactMatch) {
+    return {
+      card,
+      offer,
+      repriced: false,
+      skippedReason: "no-exact-match",
+      repricing,
+    };
+  }
+
   const rawTargetPrice = normalizeSalesCurrencyValue(repricing.targetPrice);
   const hasRawTarget = Number.isFinite(rawTargetPrice) && rawTargetPrice > 0;
-  const clampResult = hasRawTarget ? clampRepriceTarget(rawTargetPrice, currentPrice) : null;
-  const newPrice = clampResult ? clampResult.price : null;
+  const relativeClamp = hasRawTarget ? clampRepriceTarget(rawTargetPrice, baselinePrice) : null;
+  const newPrice = relativeClamp
+    ? normalizeSalesCurrencyValue(
+        applyAbsoluteBounds(relativeClamp.price, card?.repriceMinPrice, card?.repriceMaxPrice),
+      )
+    : null;
   const shouldReprice =
     (repricing.status === "overpriced" || repricing.status === "underpriced") &&
     Number.isFinite(newPrice) &&
@@ -180,7 +262,8 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     oldPrice: currentPrice,
     newPrice,
     rawTargetPrice,
-    clampedToBounds: clampResult?.clamped || false,
+    baselinePrice,
+    clampedToBounds: relativeClamp?.clamped || newPrice !== relativeClamp?.price,
     repricing,
   };
 }
@@ -203,7 +286,14 @@ async function writeReprice({ cardId, offerId, result }) {
         oldPrice: result.oldPrice,
         newPrice: result.newPrice,
         rawTargetPrice: result.rawTargetPrice,
+        baselinePrice: result.baselinePrice,
         clampedToBounds: result.clampedToBounds,
+        repricing: result.repricing,
+      });
+    } else if (result.skippedReason) {
+      createAuditEvent(state, "cardItem", cardId, "scheduled_reprice_skipped", {
+        offerId,
+        reason: result.skippedReason,
         repricing: result.repricing,
       });
     }

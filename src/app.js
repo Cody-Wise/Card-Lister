@@ -959,6 +959,12 @@ export function buildEbayPricingSummary(record = {}, soldComps = [], activeListi
     countRequested: soldComps.length,
     soldMedian: normalizeSalesCurrencyValue(pricing?.soldMedian),
     soldP25: normalizeSalesCurrencyValue(pricing?.soldP25),
+    // Match-quality evidence, previously discarded here — callers that need
+    // to gate on "was this actually a confirmed match" (see the scheduled
+    // repricer's exact-match requirement) need these, not just the bare
+    // price numbers above.
+    soldParallelFilterMode: pricing?.evidence?.soldParallelFilterMode ?? null,
+    activeParallelFilterMode: pricing?.evidence?.activeParallelFilterMode ?? null,
     updatedAt: nowIso(),
   };
 }
@@ -2161,6 +2167,17 @@ export async function handler(req, res) {
       if (body.specificsOverrides !== undefined) card.ebaySpecificsOverrides = body.specificsOverrides;
       if (body.ebayCategoryId !== undefined) card.ebayCategoryId = body.ebayCategoryId;
       if (body.recommendedPrice !== undefined) card.recommendedPrice = body.recommendedPrice;
+      // Absolute hard floor/ceiling the scheduled repricer can never cross,
+      // regardless of its relative +/-20% band (see reprice-scheduler.js) —
+      // null/blank clears the override back to "no absolute bound".
+      if (body.repriceMinPrice !== undefined) {
+        const parsed = normalizeSalesCurrencyValue(body.repriceMinPrice);
+        card.repriceMinPrice = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      }
+      if (body.repriceMaxPrice !== undefined) {
+        const parsed = normalizeSalesCurrencyValue(body.repriceMaxPrice);
+        card.repriceMaxPrice = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      }
       card.updatedAt = nowIso();
       return sendJson(res, 200, { ok: true });
     });

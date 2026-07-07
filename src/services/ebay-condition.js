@@ -87,17 +87,35 @@ export function isValidatedCategory(categoryId, sportsCategoryId) {
 }
 
 // Extracts a numeric grade string ("10", "9.5", ...) from text that may still
-// carry a grader prefix (e.g. "PSA 10") or be a bare number already.
+// carry a grader prefix (e.g. "PSA 10") or be a bare number already. Designed
+// for a clean, already-isolated grade field — NOT safe to run directly
+// against a full comp/listing title (see extractGraderAndGradeFromTitle
+// below), since a title has lots of OTHER numbers (card #, year, price) that
+// this loose pattern would false-positive on.
 function extractNumericGrade(gradeText) {
   const raw = String(gradeText || "").trim();
   const match = /\b(10|[1-9](?:\.5)?)\b/.exec(raw);
   return match ? match[1] : null;
 }
 
-function extractGrader(text) {
+export function extractGrader(text) {
   const raw = String(text || "").trim();
   const match = /\b(psa|bgs|beckett|bvg|bccg|sgc|csg|cgc|ksa|gma|hga|isa|gsg|pgs|mnt|tag|rare|rcg|ace|cga|tcg|ags|dsg|majesty|graad|arena|aigrading)\b/i.exec(raw);
   return match ? match[1].toUpperCase() : null;
+}
+
+// Extracts { grader, grade } from a noisy comp/listing TITLE — unlike
+// extractNumericGrade, this requires the grade number to appear immediately
+// after a grader keyword (e.g. "PSA 10", "BGS 9.5") rather than matching any
+// bare 1-10 number anywhere in the string, since a title's card number/year/
+// price would otherwise produce false positives.
+export function extractGraderAndGradeFromTitle(title) {
+  const raw = String(title || "");
+  const match = /\b(psa|bgs|beckett|bvg|bccg|sgc|csg|cgc|ksa|gma|hga|isa|gsg|pgs|mnt|tag|rare|rcg|ace|cga|ags|dsg|majesty|graad|arena|aigrading)\s*-?\s*(10(?:\.0)?|[1-9](?:\.5)?)\b/i.exec(
+    raw,
+  );
+  if (!match) return { grader: null, grade: null };
+  return { grader: match[1].toUpperCase(), grade: match[2].replace(/\.0$/, "") };
 }
 
 // Resolves { grader, grade } from a card's structured grading fields.

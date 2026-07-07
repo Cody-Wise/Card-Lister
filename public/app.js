@@ -71,6 +71,8 @@ const ebayAuctionDuration = document.getElementById("ebayAuctionDuration");
 const ebayBinFields = document.getElementById("ebayBinFields");
 const ebayAuctionFields = document.getElementById("ebayAuctionFields");
 const ebayCategoryId = document.getElementById("ebayCategoryId");
+const repriceMinPriceInput = document.getElementById("repriceMinPrice");
+const repriceMaxPriceInput = document.getElementById("repriceMaxPrice");
 const ebaySpecifics = document.getElementById("ebaySpecifics");
 const reviewOverlay = document.getElementById("reviewOverlay");
 const cardRows = document.getElementById("cardRows");
@@ -644,6 +646,8 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewGrade.value = card.candidateGrade || "";
   ebayListingPrice.value = card.recommendedPrice ?? "";
   ebayCategoryId.value = card.ebayCategoryId || "";
+  repriceMinPriceInput.value = card.repriceMinPrice ?? "";
+  repriceMaxPriceInput.value = card.repriceMaxPrice ?? "";
   applyEbayListingMode(card.ebayListingFormat === "AUCTION" ? "AUCTION" : "FIXED_PRICE");
   if (ebayAuctionStartPrice) {
     ebayAuctionStartPrice.value =
@@ -2821,11 +2825,17 @@ saveEbayListingButton.addEventListener("click", async () => {
     const price = parseMoneyInput(ebayListingPrice.value);
     const listingConfig = getReviewEbayPayload();
     const categoryId = ebayCategoryId.value.trim();
+    const repriceMinPrice = parseMoneyInput(repriceMinPriceInput.value);
+    const repriceMaxPrice = parseMoneyInput(repriceMaxPriceInput.value);
     const patches = {
       ebayTitle: title,
       ebayDescription: description,
       ebayCategoryId: categoryId,
       specificsOverrides: collectEbaySpecificsOverrides(),
+      // Blank clears the override back to "no absolute bound" — send null
+      // rather than omitting the key so a cleared field actually persists.
+      repriceMinPrice: !isNaN(repriceMinPrice) && repriceMinPrice > 0 ? repriceMinPrice : null,
+      repriceMaxPrice: !isNaN(repriceMaxPrice) && repriceMaxPrice > 0 ? repriceMaxPrice : null,
       ...listingConfig,
     };
     if (!isNaN(price) && price > 0) patches.recommendedPrice = price;
@@ -2837,6 +2847,8 @@ saveEbayListingButton.addEventListener("click", async () => {
       if (description) card.ebayDescription = description;
       if (price != null && price > 0) card.recommendedPrice = price;
       card.ebayCategoryId = categoryId;
+      card.repriceMinPrice = patches.repriceMinPrice;
+      card.repriceMaxPrice = patches.repriceMaxPrice;
       Object.assign(card, listingConfig);
     }
     ebayPreviewMessage.textContent = "eBay fields saved";

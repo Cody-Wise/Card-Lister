@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildConditionDescriptors, resolveGraderAndGrade } from "../src/services/ebay-condition.js";
+import {
+  buildConditionDescriptors,
+  resolveGraderAndGrade,
+  extractGraderAndGradeFromTitle,
+} from "../src/services/ebay-condition.js";
 
 const SPORTS_CATEGORY_ID = "261328";
 const opts = { categoryId: SPORTS_CATEGORY_ID, sportsCategoryId: SPORTS_CATEGORY_ID };
@@ -63,4 +67,32 @@ test("omits an over-length certification number rather than sending an invalid v
     opts
   );
   assert.equal(descriptors.length, 2);
+});
+
+test("extractGraderAndGradeFromTitle finds a grader+grade pair in a real listing title", () => {
+  assert.deepEqual(
+    extractGraderAndGradeFromTitle("2019 Donruss Kyler Murray #100 RC PSA 10"),
+    { grader: "PSA", grade: "10" }
+  );
+  assert.deepEqual(
+    extractGraderAndGradeFromTitle("2019 Donruss Kyler Murray #100 RC BGS 9.5"),
+    { grader: "BGS", grade: "9.5" }
+  );
+});
+
+test("extractGraderAndGradeFromTitle does not false-positive on a bare card number/year in a raw listing's title", () => {
+  // The whole point of this function (vs. reusing extractNumericGrade
+  // directly against a title) is that a title has lots of OTHER numbers —
+  // card number, year, price — that must NOT be mistaken for a grade.
+  assert.deepEqual(
+    extractGraderAndGradeFromTitle("2019 Donruss Kyler Murray #10 RC"),
+    { grader: null, grade: null }
+  );
+});
+
+test("extractGraderAndGradeFromTitle returns nulls for a title with no grader mention at all", () => {
+  assert.deepEqual(extractGraderAndGradeFromTitle("2019 Donruss Kyler Murray #100 RC"), {
+    grader: null,
+    grade: null,
+  });
 });
