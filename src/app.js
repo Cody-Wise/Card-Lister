@@ -1495,26 +1495,32 @@ async function refreshBestOffers() {
           const bestOffers = await getBestOffersForListing(itemId);
           if (!bestOffers.length) continue;
 
-          let pricingSummary = null;
-          let hasExactMatch = false;
-          if (card) {
-            const imageUrl = pickImageUrl(listing?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
-            const lookupMetadata = buildExternalCompLookupMetadata(card, listing?.title || "", imageUrl);
-            const lookupResult = await withTimeout(
-              getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
-              20000,
-              "Best Offer comp lookup",
-            );
-            const gradeTarget = resolveGradeTarget(card);
-            const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
-            const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
-            pricingSummary = buildEbayPricingSummary(card, filteredSold, filteredActive);
-            const parallelConfirmed =
-              !lookupMetadata.parallel ||
-              pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
-              pricingSummary?.soldParallelFilterMode === "similar_parallel";
-            hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
-          }
+          // Same fallback the reprice scheduler already uses for a card-less
+          // offer (see computeReprice in reprice-scheduler.js): a title/
+          // image-based comp lookup with no local record is strictly better
+          // than skipping comps entirely, even though the identity match is
+          // looser (isRelevantComp passes an unset player/year/set/cardNumber
+          // through rather than failing it) — assessBestOffer still reports
+          // "unconfirmed" whenever the evidence is thin, so this never
+          // overclaims confidence it doesn't have.
+          const imageUrl = pickImageUrl(listing?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
+          const lookupMetadata = card
+            ? buildExternalCompLookupMetadata(card, listing?.title || "", imageUrl)
+            : buildOfferExternalCompLookupMetadata({ ebayTitle: listing?.title || "" }, listing?.title || "", imageUrl);
+          const lookupResult = await withTimeout(
+            getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
+            20000,
+            "Best Offer comp lookup",
+          );
+          const gradeTarget = resolveGradeTarget(card || {});
+          const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
+          const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
+          const pricingSummary = buildEbayPricingSummary(card || { candidateParallel: "" }, filteredSold, filteredActive);
+          const parallelConfirmed =
+            !lookupMetadata.parallel ||
+            pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
+            pricingSummary?.soldParallelFilterMode === "similar_parallel";
+          const hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
 
           for (const bestOffer of bestOffers) {
             const assessment = assessBestOffer(bestOffer.price, pricingSummary, hasExactMatch);
@@ -1533,7 +1539,7 @@ async function refreshBestOffers() {
               verdict: assessment.verdict,
               verdictReason: card
                 ? assessment.reason
-                : `${assessment.reason} (no local card record for this listing — comps couldn't be looked up)`,
+                : `${assessment.reason} (no local card record for this listing — matched by title/image only, looser than a tracked card's full identity match)`,
             });
           }
         } catch (error) {
