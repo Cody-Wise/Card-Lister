@@ -25,6 +25,7 @@ import {
   extractItemIdFromListingUrl,
   getBestOffersSnapshot,
   saveBestOffersSnapshot,
+  respondToBestOffer,
 } from "./services/ebay-best-offers.js";
 import {
   fetchEbayActiveListings,
@@ -3240,6 +3241,44 @@ export async function handler(req, res) {
         bestOffersRefreshInProgress = false;
       });
     return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/best-offers/respond") {
+    const body = await readJson(req);
+    const itemId = extractItemIdFromListingUrl(body.listingUrl) || String(body.itemId || "").trim();
+    const bestOfferId = String(body.bestOfferId || "").trim();
+    const action = String(body.action || "").trim();
+    const counterOfferPrice = normalizeSalesCurrencyValue(body.counterOfferPrice);
+    try {
+      await respondToBestOffer({
+        itemId,
+        bestOfferId,
+        action,
+        counterOfferPrice,
+        sellerResponse: body.sellerResponse || "",
+      });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+    // Drop the responded-to offer from the cached snapshot immediately so
+    // the UI reflects it without waiting for (or spending) a full refresh
+    // cycle's worth of live Trading API + comp-lookup calls.
+    const snapshot = await getBestOffersSnapshot();
+    const respondedEntry = (snapshot.entries || []).find((entry) => entry.bestOfferId === bestOfferId);
+    const remaining = (snapshot.entries || []).filter((entry) => entry.bestOfferId !== bestOfferId);
+    await saveBestOffersSnapshot(remaining);
+    if (respondedEntry?.cardId) {
+      await withState(async (state) => {
+        createAuditEvent(state, "cardItem", respondedEntry.cardId, "best_offer_response", {
+          offerId: respondedEntry.offerId,
+          bestOfferId,
+          action,
+          offerAmount: respondedEntry.offerAmount,
+          counterOfferPrice: action === "Counter" ? counterOfferPrice : null,
+        });
+      });
+    }
+    return sendJson(res, 200, { ok: true, action });
   }
 
   if (req.method === "POST" && pathname === "/api/ebay/listings/reprice") {

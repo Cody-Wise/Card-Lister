@@ -26,6 +26,15 @@ function normalizeMoney(value) {
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
+// Escapes free-text for safe embedding in an OUTBOUND XML request body —
+// the mirror-image of decodeXmlEntities (which parses INCOMING responses).
+function encodeXmlEntities(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 const TRADING_API_URL = "https://api.ebay.com/ws/api.dll";
 const TRADING_API_SITE_ID = "0"; // EBAY-US
 const TRADING_API_COMPATIBILITY_LEVEL = "1155";
@@ -100,6 +109,48 @@ export async function getBestOffersForListing(itemId) {
 
   const blocks = xmlTagValues(text, "BestOffer");
   return blocks.map(parseBestOfferBlock).filter((offer) => offer.bestOfferId);
+}
+
+const VALID_ACTIONS = new Set(["Accept", "Decline", "Counter"]);
+
+// Accepts, declines, or counters a single buyer-submitted Best Offer.
+// Confirmed against eBay's own RespondToBestOffer reference: Action is one
+// of "Accept"/"Decline"/"Counter" (exact strings), CounterOfferPrice is
+// required only for "Counter", and this is a real, consequential,
+// hard-to-reverse action against a real buyer — accepting completes the
+// sale, declining/countering notifies the buyer immediately. Callers must
+// get explicit user confirmation before invoking this for a specific offer;
+// this function does not add its own confirmation gate.
+export async function respondToBestOffer({ itemId, bestOfferId, action, counterOfferPrice, sellerResponse }) {
+  // Both IDs are always eBay-issued numeric strings — reject anything else
+  // outright rather than interpolating unvalidated input into the outbound
+  // XML request body.
+  if (!/^\d+$/.test(String(itemId || "")) || !/^\d+$/.test(String(bestOfferId || ""))) {
+    throw new Error("respondToBestOffer requires numeric itemId and bestOfferId");
+  }
+  if (!VALID_ACTIONS.has(action)) {
+    throw new Error(`respondToBestOffer: invalid action "${action}" — must be Accept, Decline, or Counter`);
+  }
+  if (action === "Counter" && !(Number.isFinite(counterOfferPrice) && counterOfferPrice > 0)) {
+    throw new Error("respondToBestOffer: a positive counterOfferPrice is required for a Counter action");
+  }
+
+  const bodyXml = `<?xml version="1.0" encoding="utf-8"?>
+<RespondToBestOfferRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${itemId}</ItemID>
+  <BestOfferID>${bestOfferId}</BestOfferID>
+  <Action>${action}</Action>
+  ${action === "Counter" ? `<CounterOfferPrice currencyID="USD">${counterOfferPrice}</CounterOfferPrice>` : ""}
+  ${sellerResponse ? `<SellerResponse>${encodeXmlEntities(String(sellerResponse).slice(0, 250))}</SellerResponse>` : ""}
+</RespondToBestOfferRequest>`;
+
+  const text = await callTradingApi("RespondToBestOffer", bodyXml);
+  const ack = xmlTagValue(text, "Ack");
+  if (ack === "Failure") {
+    const longMessage = xmlTagValue(text, "LongMessage") || xmlTagValue(text, "ShortMessage") || "Unknown RespondToBestOffer error";
+    throw new Error(`eBay RespondToBestOffer (${action}) failed for offer ${bestOfferId}: ${decodeXmlEntities(longMessage)}`);
+  }
+  return { ok: true, action };
 }
 
 // Extracts the legacy numeric ItemID the Trading API needs from an eBay

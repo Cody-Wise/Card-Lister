@@ -2023,6 +2023,12 @@ const BEST_OFFER_VERDICT_CLASSES = {
   unconfirmed: "warn",
 };
 
+// Populated by renderBestOffersList, looked up by the delegated click
+// handler below so the Accept/Decline/Counter buttons only need to carry a
+// bestOfferId in their dataset, not the whole entry's fields.
+let currentBestOffersEntries = [];
+let currentBestOffersGeneratedAt = null;
+
 function renderBestOfferEntry(entry) {
   if (entry.error) {
     return `<article class="sales-card"><div>${salesEscape(entry.cardTitle || entry.cardId)}</div><div class="msg" style="color:#e88">${salesEscape(entry.error)}</div></article>`;
@@ -2041,20 +2047,55 @@ function renderBestOfferEntry(entry) {
       Offer: ${formatSalesMoney(entry.offerAmount)} · Listed: ${formatSalesMoney(entry.currentPrice)} · Comp range: ${range}
     </div>
     <div class="muted">${salesEscape(entry.verdictReason || "")}</div>
+    <div class="form-actions">
+      <button class="btn btn-sm" data-action="best-offer-accept" data-id="${salesEscape(entry.bestOfferId)}">Accept</button>
+      <button class="btn btn-sm btn-outline" data-action="best-offer-counter" data-id="${salesEscape(entry.bestOfferId)}">Counter</button>
+      <button class="btn btn-sm btn-outline" data-action="best-offer-decline" data-id="${salesEscape(entry.bestOfferId)}">Decline</button>
+      <span class="msg muted" data-best-offer-status="${salesEscape(entry.bestOfferId)}"></span>
+    </div>
   </article>`;
 }
 
 function renderBestOffersList(data) {
   if (!bestOffersList) return;
   const entries = Array.isArray(data?.entries) ? data.entries : [];
-  bestOffersGeneratedAt.textContent = data?.generatedAt
-    ? `Last checked ${new Date(data.generatedAt).toLocaleString()}`
+  currentBestOffersEntries = entries;
+  if (data?.generatedAt !== undefined) currentBestOffersGeneratedAt = data.generatedAt;
+  bestOffersGeneratedAt.textContent = currentBestOffersGeneratedAt
+    ? `Last checked ${new Date(currentBestOffersGeneratedAt).toLocaleString()}`
     : "Never checked yet — click Refresh.";
   if (!entries.length) {
     bestOffersList.innerHTML = `<div class="empty-state">No pending Best Offers found.</div>`;
     return;
   }
   bestOffersList.innerHTML = entries.map(renderBestOfferEntry).join("");
+}
+
+// Sends a real, consequential eBay Best Offer response (Accept/Decline/
+// Counter) — always confirmed by the caller before this runs. On success,
+// removes the offer from the on-screen list without a full refresh (the
+// server already dropped it from the cached snapshot).
+async function respondToBestOfferUi(bestOfferId, action, counterOfferPrice) {
+  const entry = currentBestOffersEntries.find((e) => e.bestOfferId === bestOfferId);
+  const statusEl = document.querySelector(`[data-best-offer-status="${CSS.escape(bestOfferId)}"]`);
+  if (statusEl) statusEl.textContent = "Sending...";
+  try {
+    await api("/api/best-offers/respond", {
+      method: "POST",
+      body: JSON.stringify({
+        listingUrl: entry?.listingUrl,
+        bestOfferId,
+        action,
+        counterOfferPrice,
+      }),
+    });
+    renderBestOffersList({
+      generatedAt: currentBestOffersGeneratedAt,
+      entries: currentBestOffersEntries.filter((e) => e.bestOfferId !== bestOfferId),
+    });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = e.message;
+  }
 }
 
 async function loadBestOffers() {
@@ -3232,6 +3273,29 @@ document.addEventListener("click", async (event) => {
           ? `Published: ${result.offer.listingUrl}`
           : `Offer ${result?.offer?.status || "not published"} — check the offer for details.`,
       );
+    }
+    if (action === "best-offer-accept") {
+      const entry = currentBestOffersEntries.find((e) => e.bestOfferId === id);
+      const amount = entry ? formatSalesMoney(entry.offerAmount) : "this amount";
+      if (!confirm(`Accept this Best Offer for ${amount}? This completes the sale on eBay immediately.`)) return;
+      await respondToBestOfferUi(id, "Accept");
+    }
+    if (action === "best-offer-decline") {
+      if (!confirm("Decline this Best Offer? The buyer will be notified immediately.")) return;
+      await respondToBestOfferUi(id, "Decline");
+    }
+    if (action === "best-offer-counter") {
+      const entry = currentBestOffersEntries.find((e) => e.bestOfferId === id);
+      const suggested = entry?.compLow ?? entry?.offerAmount ?? "";
+      const input = window.prompt("Counter-offer price ($)", suggested ? String(suggested) : "");
+      if (input === null) return;
+      const counterOfferPrice = parseMoneyInput(input);
+      if (isNaN(counterOfferPrice) || counterOfferPrice <= 0) {
+        alert("Enter a valid counter-offer price.");
+        return;
+      }
+      if (!confirm(`Send a counter-offer of ${formatSalesMoney(counterOfferPrice)} to the buyer?`)) return;
+      await respondToBestOfferUi(id, "Counter", counterOfferPrice);
     }
     if (action === "toggle-checklist") {
       const batch = state.batches.find((b) => b.id === id);
