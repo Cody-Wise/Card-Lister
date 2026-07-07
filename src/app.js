@@ -2166,7 +2166,14 @@ export async function handler(req, res) {
       // Card Size, Material, etc.) rather than derived from OCR.
       if (body.specificsOverrides !== undefined) card.ebaySpecificsOverrides = body.specificsOverrides;
       if (body.ebayCategoryId !== undefined) card.ebayCategoryId = body.ebayCategoryId;
-      if (body.recommendedPrice !== undefined) card.recommendedPrice = body.recommendedPrice;
+      if (body.recommendedPrice !== undefined) {
+        card.recommendedPrice = body.recommendedPrice;
+        // A human just set this price directly — the scheduled repricer's
+        // +/-20% band must re-anchor to it, not keep clamping toward
+        // whatever baseline it captured before this edit (which could be
+        // exactly the wrong, already-drifted price this edit is fixing).
+        card.repriceBaselinePrice = null;
+      }
       // Absolute hard floor/ceiling the scheduled repricer can never cross,
       // regardless of its relative +/-20% band (see reprice-scheduler.js) —
       // null/blank clears the override back to "no absolute bound".
@@ -3070,6 +3077,10 @@ export async function handler(req, res) {
       );
       if (matchingCard) {
         matchingCard.recommendedPrice = Number(body.price);
+        // Same reasoning as the ebay-save route: a human just pushed this
+        // price live, so the scheduler must re-anchor to it rather than
+        // clamping future cycles toward whatever baseline predates this fix.
+        matchingCard.repriceBaselinePrice = null;
         matchingCard.updatedAt = nowIso();
       }
 
