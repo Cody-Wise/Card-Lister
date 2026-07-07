@@ -1417,15 +1417,6 @@ function scheduleOfferExternalRepriceHydration({ listingId, sku, titleHint = "",
 
 let bestOffersRefreshInProgress = false;
 
-function isBestOfferEligible(card, offer) {
-  return (
-    card &&
-    card.status !== "sold" &&
-    (card.publishState === "published" || card.status === "listed") &&
-    Boolean(offer?.listingUrl)
-  );
-}
-
 // Buyer-side counterpart to buildManualRepricingSignal's overpriced/
 // underpriced/aligned framing: judges whether an incoming Best Offer is
 // reasonable against the SAME exact-match-gated comp evidence the scheduled
@@ -1447,21 +1438,34 @@ function assessBestOffer(offerAmount, pricingSummary, hasExactMatch) {
   return { verdict: "within_range", reason: `Offer falls within the confirmed comp range ($${low}-$${high}).` };
 }
 
-// Fetches pending Best Offers for every eligible published listing (Trading
-// API — see src/services/ebay-best-offers.js) and, for each one found, runs
-// a fresh exact-match-gated comp lookup to judge whether it's reasonable.
-// Runs with the same bounded concurrency + no-lock-held-during-network-I/O
-// shape as reprice-scheduler.js's repriceUnsoldListings.
+// Fetches pending Best Offers for EVERY active, Best-Offer-enabled listing
+// on the seller's actual eBay account (Trading API GetMyeBaySelling via
+// fetchEbayActiveListings — the same account-wide source the Listings
+// dashboard uses), not just listings this app happens to have a local
+// card/offer record for. A listing created outside this app's own
+// import/publish flow, or one whose local record is missing/desynced,
+// still gets checked — confirmed as a real gap live (two pending offers on
+// tracked listings weren't found because the old version only ever walked
+// state.cardItems/state.offers). Local card data is still used for the
+// exact-match comp lookup whenever a matching local record exists; when it
+// doesn't, the offer is still surfaced with verdict "unconfirmed" rather
+// than being silently skipped.
 async function refreshBestOffers() {
-  const candidates = await withStateReadOnly(async (state) => {
-    const offerByCardId = new Map();
-    for (const offer of state.offers || []) {
-      if (offer?.cardItemId) offerByCardId.set(offer.cardItemId, offer);
-    }
-    return (state.cardItems || [])
-      .map((card) => ({ card: { ...card }, offer: offerByCardId.get(card.id) ? { ...offerByCardId.get(card.id) } : null }))
-      .filter(({ card, offer }) => isBestOfferEligible(card, offer));
+  const { trackedOffers, cardById } = await withStateReadOnly(async (state) => {
+    const cards = Array.isArray(state.cardItems) ? state.cardItems : [];
+    return {
+      trackedOffers: [
+        ...(Array.isArray(state.offers) ? state.offers.map((o) => ({ ...o })) : []),
+        ...buildTrackedOffersFromCards(cards),
+      ],
+      cardById: new Map(cards.map((card) => [card.id, { ...card }])),
+    };
   });
+
+  const activeListings = await fetchEbayActiveListings({ offers: trackedOffers, pageSize: 100, maxPages: 5 });
+  const candidates = activeListings.filter(
+    (listing) => listing?.bestOfferEnabled && (listing?.listingId || listing?.listingUrl),
+  );
 
   const entries = [];
   const concurrency = 3;
@@ -1469,38 +1473,44 @@ async function refreshBestOffers() {
   await Promise.all(
     Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
       while (queue.length) {
-        const { card, offer } = queue.shift();
-        const itemId = extractItemIdFromListingUrl(offer.listingUrl);
+        const listing = queue.shift();
+        const itemId = String(listing.listingId || extractItemIdFromListingUrl(listing.listingUrl) || "").trim();
         if (!itemId) continue;
+        const card = listing.cardItemId ? cardById.get(listing.cardItemId) || null : null;
+        const listingUrl = listing.listingUrl || `https://www.ebay.com/itm/${itemId}`;
         try {
           const bestOffers = await getBestOffersForListing(itemId);
           if (!bestOffers.length) continue;
 
-          const imageUrl = pickImageUrl(offer?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
-          const lookupMetadata = buildExternalCompLookupMetadata(card, offer?.ebayTitle || "", imageUrl);
-          const lookupResult = await withTimeout(
-            getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
-            20000,
-            "Best Offer comp lookup",
-          );
-          const gradeTarget = resolveGradeTarget(card);
-          const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
-          const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
-          const pricingSummary = buildEbayPricingSummary(card, filteredSold, filteredActive);
-          const parallelConfirmed =
-            !lookupMetadata.parallel ||
-            pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
-            pricingSummary?.soldParallelFilterMode === "similar_parallel";
-          const hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
+          let pricingSummary = null;
+          let hasExactMatch = false;
+          if (card) {
+            const imageUrl = pickImageUrl(listing?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
+            const lookupMetadata = buildExternalCompLookupMetadata(card, listing?.title || "", imageUrl);
+            const lookupResult = await withTimeout(
+              getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
+              20000,
+              "Best Offer comp lookup",
+            );
+            const gradeTarget = resolveGradeTarget(card);
+            const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
+            const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
+            pricingSummary = buildEbayPricingSummary(card, filteredSold, filteredActive);
+            const parallelConfirmed =
+              !lookupMetadata.parallel ||
+              pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
+              pricingSummary?.soldParallelFilterMode === "similar_parallel";
+            hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
+          }
 
           for (const bestOffer of bestOffers) {
             const assessment = assessBestOffer(bestOffer.price, pricingSummary, hasExactMatch);
             entries.push({
-              cardId: card.id,
-              offerId: offer.id,
-              listingUrl: offer.listingUrl,
-              cardTitle: offer.ebayTitle || card.ebayTitle || "",
-              currentPrice: normalizeSalesCurrencyValue(offer.price ?? card.recommendedPrice),
+              cardId: card?.id || null,
+              offerId: listing.id || null,
+              listingUrl,
+              cardTitle: listing.title || card?.ebayTitle || "",
+              currentPrice: normalizeSalesCurrencyValue(listing.currentPrice ?? card?.recommendedPrice),
               bestOfferId: bestOffer.bestOfferId,
               offerAmount: bestOffer.price,
               buyerUserId: bestOffer.buyerUserId,
@@ -1508,14 +1518,16 @@ async function refreshBestOffers() {
               compLow: pricingSummary?.low ?? null,
               compHigh: pricingSummary?.high ?? null,
               verdict: assessment.verdict,
-              verdictReason: assessment.reason,
+              verdictReason: card
+                ? assessment.reason
+                : `${assessment.reason} (no local card record for this listing — comps couldn't be looked up)`,
             });
           }
         } catch (error) {
           entries.push({
-            cardId: card.id,
-            offerId: offer.id,
-            listingUrl: offer.listingUrl,
+            cardId: card?.id || null,
+            offerId: listing.id || null,
+            listingUrl,
             error: error.message,
           });
         }
