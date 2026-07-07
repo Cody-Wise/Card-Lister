@@ -1755,6 +1755,7 @@ async function fetchTradingActiveListings({ pageSize = 200, maxPages = 10 } = {}
   for (let pageNumber = 1; pageNumber <= safeMaxPages && pageNumber <= totalPages; pageNumber += 1) {
     const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <DetailLevel>ReturnAll</DetailLevel>
   <ActiveList>
     <Include>true</Include>
     <Pagination>

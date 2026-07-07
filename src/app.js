@@ -1463,12 +1463,21 @@ async function refreshBestOffers() {
   });
 
   const activeListings = await fetchEbayActiveListings({ offers: trackedOffers, pageSize: 100, maxPages: 5 });
-  const candidates = activeListings.filter(
-    (listing) => listing?.bestOfferEnabled && (listing?.listingId || listing?.listingUrl),
-  );
+  // Not pre-filtered by listing.bestOfferEnabled — confirmed live that
+  // GetMyeBaySelling's ActiveList doesn't reliably return BestOfferDetails
+  // at all (even with DetailLevel=ReturnAll), so that flag can't be trusted
+  // to decide which listings to skip. getBestOffersForListing() already
+  // handles "this listing isn't Best-Offer-enabled" as a normal empty
+  // result rather than an error, so it's safe (if a bit more Trading-API-
+  // call-heavy) to just ask every active listing directly.
+  const candidates = activeListings.filter((listing) => listing?.listingId || listing?.listingUrl);
 
   const entries = [];
-  const concurrency = 3;
+  // Higher than the old 3 — GetBestOffers is a lightweight, free Trading
+  // API call (unlike Apify's paid comp lookups), and with the
+  // bestOfferEnabled pre-filter gone every active listing on the account
+  // now gets checked, which can be a few hundred for an active seller.
+  const concurrency = 8;
   const queue = [...candidates];
   await Promise.all(
     Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
