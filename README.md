@@ -469,7 +469,7 @@ The app loads a root-level `.env` automatically through [src/lib/load-env.js](/U
 | `APIFY_MARKET_HEAT_SAMPLE_SIZE` | Market heat sample size |
 | `APIFY_BUDGET_SAFETY_MARGIN_USD` | Refuses new per-card lookups once the account's real monthly usage (per Apify's own `/v2/users/me/limits`) is within this many dollars of its cap, default `1` — added 2026-07-03 after Market Heat alone blew through a $29/month cap with no warning |
 | `MARKET_HEAT_DEFAULT_LIMIT` | Default leaderboard size |
-| `MARKET_HEAT_REFRESH_MS` | Market heat cache TTL — also the hard floor on how often a real Market Heat refresh can happen at all, regardless of page visits or "Refresh" clicks, default 7 days |
+| `MARKET_HEAT_REFRESH_MS` | Market heat cache TTL — also the hard floor on how often a real Market Heat refresh can happen at all, regardless of page visits or "Refresh" clicks, default 30 days |
 
 SoldComps.com (`api.sold-comps.com`) and CardHedge are both fully removed — the Apify actor above is the sole per-card sold-comp provider, falling back to eBay Browse "sold listings" only when `APIFY_TOKEN` isn't configured. The generically-named `SOLDCOMPS_REPRICE_*`/`SOLDCOMPS_MANUAL_REPRICE_TIMEOUT_MS` env vars below are unrelated to the SoldComps.com provider itself — they're timeout knobs around the reprice-hydration code paths regardless of which sold-comp provider backs them, and weren't renamed in this swap.
 

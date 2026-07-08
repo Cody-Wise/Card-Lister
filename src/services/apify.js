@@ -40,8 +40,13 @@ import {
 // incident (Market Heat alone blew a $29/month cap in a few refreshes).
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const marketHeatCachePath = path.join(rootDir, "data", "market-heat-cache.json");
+// Was weekly (7 days); changed to monthly at the user's request — Market
+// Heat is a broad, sport-wide sampling feature (not per-card pricing), so
+// there's little value in refreshing it more often than that, and every
+// refresh spends real Apify budget (see the 2026-07-03 incident noted
+// above).
 const MARKET_HEAT_REFRESH_MS = Number(
-  process.env.MARKET_HEAT_REFRESH_MS || 7 * 24 * 60 * 60 * 1000,
+  process.env.MARKET_HEAT_REFRESH_MS || 30 * 24 * 60 * 60 * 1000,
 );
 const MARKET_HEAT_DEFAULT_SAMPLE_SIZE = Number(process.env.APIFY_MARKET_HEAT_SAMPLE_SIZE || 500);
 const MARKET_HEAT_DEFAULT_LIMIT = Number(process.env.MARKET_HEAT_DEFAULT_LIMIT || 50);
