@@ -580,6 +580,15 @@ select { cursor: pointer; }
 .badge.warn { background: var(--warn-bg); color: var(--warn); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); }
 
+.apify-budget-badge {
+  position: fixed;
+  top: 1rem;
+  right: 1.5rem;
+  z-index: 500;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.78rem;
+}
+
 /* Empty state */
 .empty-state {
   grid-column: 1 / -1;

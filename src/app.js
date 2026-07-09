@@ -2346,6 +2346,12 @@ export async function handler(req, res) {
   }
 
   if (req.method === "GET" && pathname === "/api/bootstrap") {
+    // Fetched before the lock, not inside it — getApifyUsageStatus() hits
+    // Apify's own account API on a cache miss (60s TTL), and network I/O
+    // should never run while holding the state lock (same discipline as
+    // pipeline.js/reprice-scheduler.js's read-snapshot -> unlocked-compute
+    // split).
+    const apifyUsage = await getApifyUsageStatus();
     return withStateReadOnly(async (state) => {
       return sendJson(res, 200, {
         batches: state.batches.map(cleanBatch),
@@ -2358,6 +2364,7 @@ export async function handler(req, res) {
         offers: state.offers.map((o) => ({ id: o.id, cardItemId: o.cardItemId, status: o.status, listingUrl: o.listingUrl, publishedAt: o.publishedAt, ebayOfferId: o.ebayOfferId })),
         driveFolderId: process.env.DRIVE_FOLDER_ID || "",
         gradingFeatureEnabled: isGradingFeatureEnabled(),
+        apifyUsage,
       });
     });
   }

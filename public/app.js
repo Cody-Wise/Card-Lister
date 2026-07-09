@@ -1,4 +1,5 @@
 const serverStatus = document.getElementById("serverStatus");
+const apifyBudgetBadge = document.getElementById("apifyBudgetBadge");
 const newBatchButton = document.getElementById("newBatchButton");
 const createBatchButton = document.getElementById("createBatchButton");
 const addCardRowButton = document.getElementById("addCardRowButton");
@@ -1882,9 +1883,30 @@ function renderBatchFilter() {
   }
 }
 
+// Reflects Apify's own live account usage (see getApifyUsageStatus in
+// apify.js) — not a locally-simulated per-run deduction, since actual run
+// cost varies too widely ($0.0001-$2+ depending on keyword popularity) to
+// estimate accurately. Refreshed every refresh() cycle, so it visibly
+// ticks down as real usage accrues without a separate poll.
+function renderApifyBudgetBadge(usage) {
+  if (!apifyBudgetBadge) return;
+  if (!usage?.configured || !Number.isFinite(usage.limitUsd)) {
+    apifyBudgetBadge.style.display = "none";
+    return;
+  }
+  const { usageUsd, limitUsd, remainingUsd, hasBudget } = usage;
+  apifyBudgetBadge.style.display = "";
+  apifyBudgetBadge.classList.remove("good", "warn", "bad");
+  const remainingPct = limitUsd > 0 ? remainingUsd / limitUsd : 1;
+  apifyBudgetBadge.classList.add(!hasBudget ? "bad" : remainingPct <= 0.2 ? "warn" : "good");
+  apifyBudgetBadge.textContent = `Apify ${formatSalesMoney(usageUsd)} / ${formatSalesMoney(limitUsd)}`;
+  apifyBudgetBadge.title = `${formatSalesMoney(remainingUsd)} remaining this billing cycle`;
+}
+
 async function refresh() {
   const boot = await api("/api/bootstrap");
   state = boot;
+  renderApifyBudgetBadge(boot.apifyUsage);
   gradingFeatureEnabled = Boolean(boot.gradingFeatureEnabled);
   const gradingNavButton = document.querySelector('.nav-item[data-tab="grading"]');
   const gradingTabContent = document.getElementById("tab-grading");
