@@ -4294,6 +4294,16 @@ export async function handler(req, res) {
         card.publishState = "published";
         card.listingId = offer.listingId || extractEbayListingId(offer.listingUrl);
         card.listingUrl = offer.listingUrl;
+        // The price a card goes live at IS its original listing price — the
+        // auto-repricer's ±20% band anchors to this permanently (see
+        // repriceBaselinePrice in reprice-scheduler.js). Seeding it here at
+        // publish time closes the gap where the scheduler's lazy capture
+        // could anchor to an already-drifted price instead: confirmed live,
+        // that gap let a $15 card compound down to $3 before it sold.
+        const publishedPrice = normalizeSalesCurrencyValue(offer.price ?? card.recommendedPrice);
+        if (Number.isFinite(publishedPrice) && publishedPrice > 0) {
+          card.repriceBaselinePrice = publishedPrice;
+        }
         card.updatedAt = nowIso();
         // movePublishedDriveImages() can derive the source folder itself
         // from driveFrontFileId/driveBackFileId's Drive metadata when
@@ -4477,6 +4487,13 @@ export async function handler(req, res) {
           card.publishState = "published";
           card.listingId = item.listingId || extractEbayListingId(item.listingUrl);
           card.listingUrl = item.listingUrl;
+          // Same publish-time baseline seeding as the single-offer publish
+          // route above — the go-live price is the auto-repricer's permanent
+          // ±20% anchor.
+          const publishedPrice = normalizeSalesCurrencyValue(offer?.price ?? card.recommendedPrice);
+          if (Number.isFinite(publishedPrice) && publishedPrice > 0) {
+            card.repriceBaselinePrice = publishedPrice;
+          }
           card.updatedAt = nowIso();
           // See the equivalent single-offer-publish route above for why
           // driveSourceFolderId isn't required here on its own.
