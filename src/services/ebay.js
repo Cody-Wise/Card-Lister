@@ -762,8 +762,21 @@ function isThickCard(card) {
   );
 }
 
-function getFulfillmentPolicyIdForCard(card) {
+function isGradedCard(card) {
+  return card.candidateCondition === "graded" || Boolean(card.gradedFlag);
+}
+
+export function getFulfillmentPolicyIdForCard(card) {
   const config = getConfig();
+  if (isGradedCard(card)) {
+    // A graded slab is rigid and too thick for eBay Standard Envelope (the
+    // service on both <$20 policies — confirmed live via eBay's Account
+    // API) regardless of price, so it always ships Ground Advantage
+    // instead. Checked before the price branch below on purpose: a cheap
+    // graded card would otherwise fall into the <$20 envelope policies
+    // just like a cheap raw card, which doesn't fit a slab.
+    return config.fulfillmentPolicyId;
+  }
   const price = getCardPrice(card);
   if (price >= 20) {
     return config.fulfillmentPolicyId;

@@ -9,6 +9,7 @@ import {
   setEbayConfig,
   TRADING_AUTH_FAILURE_PATTERN,
   extractListingIdFromUrl,
+  getFulfillmentPolicyIdForCard,
 } from "../src/services/ebay.js";
 
 // These exercise the eBay OAuth token exchange/refresh flows end-to-end
@@ -267,4 +268,72 @@ test("extractListingIdFromUrl returns null for a missing/non-matching URL", () =
   assert.equal(extractListingIdFromUrl(""), null);
   assert.equal(extractListingIdFromUrl(null), null);
   assert.equal(extractListingIdFromUrl("https://www.ebay.com/sch/i.html?_nkw=x"), null);
+});
+
+// --- getFulfillmentPolicyIdForCard ------------------------------------------
+// Confirmed live via eBay's own Account API: the two "<$20" fulfillment
+// policies both use the US_eBayStandardEnvelope shipping service — a thin
+// flat-mail service a rigid graded slab can't physically ship in properly.
+// The main policy (fulfillmentPolicyId) is named "Mascot - Ground advantage"
+// and uses USPSParcel. A graded card must always get that one, regardless of
+// price — at the user's explicit request.
+
+test("getFulfillmentPolicyIdForCard always uses the Ground Advantage policy for a graded card, regardless of price", async () => {
+  setEbayConfig({
+    fulfillmentPolicyId: "",
+    lessThan20FulfillmentPolicyId: "",
+    lessThan20MachinableFulfillmentPolicyId: "",
+  });
+  await withEbayEnv(
+    {
+      EBAY_FULFILLMENT_POLICY_ID: "GROUND-ADVANTAGE-POLICY",
+      EBAY_FULFILLMENT_POLICY_LESS_THAN_20_ID: "ENVELOPE-POLICY",
+      EBAY_FULFILLMENT_POLICY_LESS_THAN_20_MACHINEABLE_ID: "ENVELOPE-MACHINABLE-POLICY",
+    },
+    () => {
+      // Real live case this fixes: a cheap ($5) graded card previously got
+      // the <$20 eBay Standard Envelope policy just like a raw card would.
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ candidateCondition: "graded", recommendedPrice: 5 }),
+        "GROUND-ADVANTAGE-POLICY",
+      );
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ gradedFlag: true, recommendedPrice: 3, isThickCard: true }),
+        "GROUND-ADVANTAGE-POLICY",
+      );
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ candidateCondition: "graded", recommendedPrice: 50 }),
+        "GROUND-ADVANTAGE-POLICY",
+      );
+    },
+  );
+});
+
+test("getFulfillmentPolicyIdForCard still uses price/thickness branching for a raw (non-graded) card", async () => {
+  setEbayConfig({
+    fulfillmentPolicyId: "",
+    lessThan20FulfillmentPolicyId: "",
+    lessThan20MachinableFulfillmentPolicyId: "",
+  });
+  await withEbayEnv(
+    {
+      EBAY_FULFILLMENT_POLICY_ID: "GROUND-ADVANTAGE-POLICY",
+      EBAY_FULFILLMENT_POLICY_LESS_THAN_20_ID: "ENVELOPE-POLICY",
+      EBAY_FULFILLMENT_POLICY_LESS_THAN_20_MACHINEABLE_ID: "ENVELOPE-MACHINABLE-POLICY",
+    },
+    () => {
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ candidateCondition: "raw", recommendedPrice: 25 }),
+        "GROUND-ADVANTAGE-POLICY",
+      );
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ candidateCondition: "raw", recommendedPrice: 5, isThickCard: true }),
+        "ENVELOPE-MACHINABLE-POLICY",
+      );
+      assert.equal(
+        getFulfillmentPolicyIdForCard({ candidateCondition: "raw", recommendedPrice: 5 }),
+        "ENVELOPE-POLICY",
+      );
+    },
+  );
 });
