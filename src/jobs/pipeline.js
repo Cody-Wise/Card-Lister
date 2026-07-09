@@ -1053,13 +1053,32 @@ export async function processCardItem(cardItemId) {
   return writeCardResult(cardItemId, result);
 }
 
+// Statuses that mean a card already has real, usable OCR/pricing data —
+// processBatch() skips these rather than blindly reprocessing every card
+// in the batch. Confirmed live via the Apify run console: adding one new
+// card to an existing, already-processed batch and clicking "Process"
+// re-ran EVERY other card in that batch too, each burning a fresh (paid)
+// Apify sold-comp lookup, because OCR/vision is non-deterministic between
+// runs — a card's re-derived apifyLookupKey rarely matches its cached one
+// even when nothing about the card actually needed to change. A single
+// card's dedicated "Process" button (processCardItem called directly) is
+// unaffected — that's an explicit, deliberate reprocess of one card and
+// stays available for exactly that.
+const ALREADY_PROCESSED_STATUSES = new Set(["priced", "ready", "listed", "sold", "sent_to_grading"]);
+
+export function needsBatchProcessing(card = {}) {
+  return !ALREADY_PROCESSED_STATUSES.has(card.status);
+}
+
 export async function processBatch(batchId) {
   const cardIds = await withState(async (state) => {
     const batch = state.batches.find((entry) => entry.id === batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
     batch.status = "processing";
     batch.updatedAt = nowIso();
-    return state.cardItems.filter((item) => item.batchId === batchId).map((item) => item.id);
+    return state.cardItems
+      .filter((item) => item.batchId === batchId && needsBatchProcessing(item))
+      .map((item) => item.id);
   });
 
   const concurrency = Math.max(

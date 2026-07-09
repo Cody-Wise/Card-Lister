@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isRelevantComp } from "../src/jobs/pipeline.js";
+import { isRelevantComp, needsBatchProcessing } from "../src/jobs/pipeline.js";
 
 test("rejects comps from a different year even when player and set tokens both match", () => {
   // Real production case (2026-07-04): a 2024 Luka Doncic Donruss Optic card
@@ -40,4 +40,29 @@ test("does not reject anything when the card's own year is unknown", () => {
   const metadata = { playerName: "Luka Doncic", setName: "Donruss", cardNumber: "1" };
   const comp = { title: "2021-22 Panini Donruss Optic LUKA DONCIC Opti-Graphs CHOICE AUTO On-Card" };
   assert.equal(isRelevantComp(comp, metadata), true);
+});
+
+// --- needsBatchProcessing ----------------------------------------------------
+// Real production incident, confirmed via the Apify run console: clicking
+// "Process" on a batch after adding one new card re-ran EVERY other
+// already-processed card in that batch too, each burning a fresh paid Apify
+// sold-comp lookup — because processBatch() reprocessed the whole batch
+// unconditionally, and OCR/vision is non-deterministic enough between runs
+// that an already-good card's re-derived apifyLookupKey rarely matches its
+// cached one even when nothing needed to change.
+
+test("needsBatchProcessing skips cards already priced, ready, listed, sold, or sent to grading", () => {
+  for (const status of ["priced", "ready", "listed", "sold", "sent_to_grading"]) {
+    assert.equal(needsBatchProcessing({ status }), false, `expected ${status} to be skipped`);
+  }
+});
+
+test("needsBatchProcessing still reprocesses new/pending/needs_review cards", () => {
+  for (const status of ["new", "ocr_pending", "needs_review"]) {
+    assert.equal(needsBatchProcessing({ status }), true, `expected ${status} to be reprocessed`);
+  }
+});
+
+test("needsBatchProcessing treats a card with no status at all as needing processing", () => {
+  assert.equal(needsBatchProcessing({}), true);
 });
