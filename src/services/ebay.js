@@ -1311,6 +1311,20 @@ const RAW_CONDITION_DESCRIPTOR_VALUE_IDS = {
   poor: "400013",
 };
 
+// Confirmed live via eBay's Sell Metadata API (get_item_condition_policies)
+// after a real 400 rejection ("Condition descriptor value 400011 is not
+// valid for condition descriptor 40001") on a raw Magic: The Gathering
+// card: CCG Individual Cards (183454) uses ENTIRELY DIFFERENT value IDs
+// for descriptor 40001 than Sports (261328) and Non-Sport (183050), which
+// share the table above. Only "Near mint or better" (400010) happens to
+// be the same ID across all three categories.
+const RAW_CONDITION_DESCRIPTOR_VALUE_IDS_TCG = {
+  "near mint or better": "400010",
+  excellent: "400015",
+  "very good": "400016",
+  poor: "400017",
+};
+
 // Coarser top-level Inventory API condition enum, kept in the same
 // increasing-wear order as the descriptor above so the two fields never
 // contradict each other on the listing.
@@ -1320,6 +1334,19 @@ const RAW_CONDITION_DESCRIPTOR_VALUE_IDS = {
 function normalizeRawCondition(card) {
   const normalized = String(card.candidateGrade || "").trim().toLowerCase();
   return RAW_CONDITION_DESCRIPTOR_VALUE_IDS[normalized] ? normalized : "near mint or better";
+}
+
+// categoryId here must be the SAME resolved category the listing is
+// actually being created under (resolveCategoryIdForCard's result) — using
+// the wrong table for the category is exactly what produced the live 400.
+export function resolveRawConditionDescriptorValueId(card, categoryId) {
+  const config = getConfig();
+  const label = normalizeRawCondition(card);
+  const table =
+    String(categoryId) === String(config.tradingCardGameCategoryId)
+      ? RAW_CONDITION_DESCRIPTOR_VALUE_IDS_TCG
+      : RAW_CONDITION_DESCRIPTOR_VALUE_IDS;
+  return table[label];
 }
 
 // Confirmed directly against eBay's own docs after a real 400 rejection
@@ -1968,15 +1995,16 @@ export async function createInventoryItem(card) {
   const description = card.ebayDescription || await buildEBayDescription(card);
   const specifics = stripEmptySpecifics(buildItemSpecifics(card));
   const isGraded = card.candidateCondition === "graded" || card.gradedFlag;
+  const resolvedCategoryId = resolveCategoryIdForCard(card);
   const conditionDescriptors = isGraded
     ? buildConditionDescriptors(card, {
-        categoryId: resolveCategoryIdForCard(card),
+        categoryId: resolvedCategoryId,
         sportsCategoryId: config.categoryId
       })
     : [
         {
           name: "40001",
-          values: [RAW_CONDITION_DESCRIPTOR_VALUE_IDS[normalizeRawCondition(card)]],
+          values: [resolveRawConditionDescriptorValueId(card, resolvedCategoryId)],
         },
       ];
   const body = {

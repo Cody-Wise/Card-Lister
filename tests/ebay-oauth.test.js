@@ -10,6 +10,7 @@ import {
   TRADING_AUTH_FAILURE_PATTERN,
   extractListingIdFromUrl,
   getFulfillmentPolicyIdForCard,
+  resolveRawConditionDescriptorValueId,
 } from "../src/services/ebay.js";
 
 // These exercise the eBay OAuth token exchange/refresh flows end-to-end
@@ -336,4 +337,36 @@ test("getFulfillmentPolicyIdForCard still uses price/thickness branching for a r
       );
     },
   );
+});
+
+// --- resolveRawConditionDescriptorValueId -----------------------------------
+// Real live 400 rejection, confirmed against eBay's own Sell Metadata API
+// (get_item_condition_policies): CCG Individual Cards (183454) uses entirely
+// different value IDs for condition descriptor 40001 than Sports (261328)
+// and Non-Sport (183050) — "Excellent" is 400015 there, not 400011. A raw
+// Magic: The Gathering card ("Frodo Baggins") sent 400011 and eBay rejected
+// it outright as invalid for that category.
+
+test("resolveRawConditionDescriptorValueId uses the TCG-specific value IDs for the TCG category", async () => {
+  await withEbayEnv({ EBAY_TCG_CATEGORY_ID: "183454" }, () => {
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Near Mint or Better" }, "183454"), "400010");
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Excellent" }, "183454"), "400015");
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Very Good" }, "183454"), "400016");
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Poor" }, "183454"), "400017");
+  });
+});
+
+test("resolveRawConditionDescriptorValueId still uses the Sports/Non-Sport value IDs for every other category", async () => {
+  await withEbayEnv({ EBAY_TCG_CATEGORY_ID: "183454" }, () => {
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Excellent" }, "261328"), "400011");
+    assert.equal(resolveRawConditionDescriptorValueId({ candidateGrade: "Excellent" }, "183050"), "400011");
+  });
+});
+
+test("resolveRawConditionDescriptorValueId reproduces and fixes the real live 400 on card_0148 (Frodo Baggins, MTG)", async () => {
+  await withEbayEnv({ EBAY_TCG_CATEGORY_ID: "183454" }, () => {
+    const value = resolveRawConditionDescriptorValueId({ candidateGrade: "Excellent" }, "183454");
+    assert.equal(value, "400015");
+    assert.notEqual(value, "400011", "400011 is the Sports/Non-Sport value that eBay actually rejected");
+  });
 });
