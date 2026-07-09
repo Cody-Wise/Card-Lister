@@ -13,6 +13,7 @@ import {
   importState,
 } from "./lib/store.js";
 import { saveImageRecord } from "./lib/storage.js";
+import { resolveGraderAndGrade } from "./services/ebay-condition.js";
 import {
   processBatch,
   processCardItem,
@@ -117,8 +118,27 @@ function isPublishedOffer(offer) {
   );
 }
 
-function cleanCard(card, offers = []) {
-  const normalized = { ...card };
+// The review UI's grade <select> options are literally "PSA 10", "BGS 9.5",
+// etc. — matches GRADER_VALUE_IDS' synonym mapping in ebay-condition.js
+// (which already treats BECKETT and BGS as the same real-world grader for
+// eBay's own value IDs), since the dropdown only has a "BGS" optgroup.
+const GRADE_DROPDOWN_GRADER_ALIASES = { BECKETT: "BGS" };
+
+// Reconstructs the exact dropdown option string ("PSA 10") from whatever
+// messier grader/grade text OCR actually produced, reusing the same
+// grader/grade extraction already trusted for eBay's real condition
+// descriptors — rather than requiring card.candidateGrade to already be an
+// exact character-for-character match against an option's value.
+function computeGradeDropdownValue(card) {
+  const isGraded = card.candidateCondition === "graded" || Boolean(card.gradedFlag);
+  if (!isGraded) return null;
+  const { grader, grade } = resolveGraderAndGrade(card);
+  if (!grader || !grade) return null;
+  return `${GRADE_DROPDOWN_GRADER_ALIASES[grader] || grader} ${grade}`;
+}
+
+export function cleanCard(card, offers = []) {
+  const normalized = { ...card, gradeDropdownValue: computeGradeDropdownValue(card) };
   if (normalized.publishState === "sold" || normalized.status === "sold") {
     normalized.status = "sold";
     normalized.publishState = "sold";

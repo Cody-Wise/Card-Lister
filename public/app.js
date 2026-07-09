@@ -648,7 +648,13 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   // restoring the saved grade — setting .value against a currently-hidden/
   // disabled optgroup's option isn't reliable across browsers.
   applyConditionModeToGradeSelect();
-  reviewGrade.value = card.candidateGrade || "";
+  // gradeDropdownValue (server-computed via resolveGraderAndGrade, the same
+  // parser eBay's real condition descriptors use) reconstructs the exact
+  // "PSA 10"-style option string from whatever messier grader/grade text OCR
+  // produced — card.candidateGrade alone often doesn't exactly
+  // character-match an option's value, which silently left the dropdown on
+  // its default/first option instead of the real detected grade.
+  reviewGrade.value = card.gradeDropdownValue || card.candidateGrade || "";
   ebayListingPrice.value = card.recommendedPrice ?? "";
   ebayCategoryId.value = card.ebayCategoryId || "";
   repriceMinPriceInput.value = card.repriceMinPrice ?? "";
