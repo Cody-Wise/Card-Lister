@@ -16,6 +16,7 @@
 // would.
 import { getLiveCardComps } from "../services/comps.js";
 import { updateEbayListingPrice } from "../services/ebay.js";
+import { buildApifyLookupKey } from "../services/apify.js";
 import { filterExactMatchComps, resolveGradeTarget } from "./pipeline.js";
 import {
   buildExternalCompLookupMetadata,
@@ -26,6 +27,7 @@ import {
   rememberOfferEbayTitle,
   withTimeout,
   normalizeSalesCurrencyValue,
+  shouldSkipApifyLookup,
 } from "../app.js";
 import { createAuditEvent, nowIso, withState, withStateReadOnly } from "../lib/store.js";
 
@@ -131,6 +133,18 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     ? buildExternalCompLookupMetadata(card, offer?.ebayTitle || "", imageUrl)
     : buildOfferExternalCompLookupMetadata(offer, card?.ebayTitle || "", imageUrl);
 
+  // This job calls getLiveCardComps (a real, billed Apify run) for every
+  // repriceable card on every scheduled tick, unconditionally — confirmed
+  // 2026-07-11 as the dominant driver of a week of runaway Apify spend: a
+  // fixed set of ~40 cards with no real sold history (vintage/obscure
+  // listings) never satisfy the exact-match gate below, so they paid for a
+  // fresh lookup every single cycle, forever. Skip the paid call entirely
+  // when the last attempt under this same identity already came back empty
+  // and hasn't cleared its cooldown yet.
+  if (shouldSkipApifyLookup(card, lookupMetadata)) {
+    return { skipped: "apify-cooldown" };
+  }
+
   const lookupResult = await withTimeout(
     getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
     lookupTimeoutMs(),
@@ -156,6 +170,20 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
   }
   if (card) {
     card.externalCompLookupAttemptedAt = nowIso();
+    card.apifyLookupKey = buildApifyLookupKey(lookupMetadata);
+    // Must key off the RELEVANCE-FILTERED count (filteredSold), not the raw
+    // lookupResult.sold — confirmed live 2026-07-13 still costing real money
+    // a day after the first negative-cache fix: ~15 cards (Dick Butkus,
+    // Montez Sweat, Terrance Ferguson, Stephen Curry, Anthony Edwards, etc.)
+    // kept re-firing a real Apify run every single 360-minute reprice cycle,
+    // forever, because their raw searches always returned SOME loosely-
+    // matching noise (wrong parallel/grade/player-adjacent junk) that never
+    // survives filterExactMatchComps — so apifyNoCompsFound was always
+    // false, the SHORT 15-minute cooldown applied instead of the 24h one,
+    // and 15 minutes is trivially shorter than a 6-hour cycle, i.e. no real
+    // cooldown at all. "No comps found" has to mean "nothing we can
+    // actually use to price this card," not "the raw API returned zero rows."
+    card.apifyNoCompsFound = !Array.isArray(filteredSold) || filteredSold.length === 0;
     card.externalSoldComps = filteredSold.slice(0, 50);
     card.externalCompSource = "ebay_image_search";
     card.externalPricingSummary = pricingSummary;

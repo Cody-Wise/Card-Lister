@@ -9,6 +9,7 @@ import {
   resolveCardFromSalesLine,
   applySoldSaleToCard,
   applySoldSaleToOffer,
+  detectSalePriceAnomaly,
   lineItemSku,
   lineItemListingId,
   lineItemDisplayName,
@@ -109,7 +110,17 @@ export async function syncEbaySales({ days = 30 } = {}) {
     for (const [cardId, sale] of matchedSalesByCardId.entries()) {
       const card = cardById.get(cardId);
       if (!card) continue;
-      if (applySoldSaleToCard(card, sale)) updatedCards += 1;
+      const wasAlreadySold = card.status === "sold";
+      if (applySoldSaleToCard(card, sale)) {
+        updatedCards += 1;
+        if (!wasAlreadySold) {
+          const anomaly = detectSalePriceAnomaly(card, card.soldPrice);
+          if (anomaly) {
+            card.saleAnomaly = anomaly;
+            createAuditEvent(state, "cardItem", card.id, "sale_price_anomaly", anomaly);
+          }
+        }
+      }
       const offer =
         (sale.listingId ? offerByListingId.get(String(sale.listingId)) : null) ||
         (card.sku ? offerBySku.get(String(card.sku)) : null) ||

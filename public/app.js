@@ -110,9 +110,17 @@ const listingSport = document.getElementById("listingSport");
 const listingSearch = document.getElementById("listingSearch");
 const listingSort = document.getElementById("listingSort");
 const listingsLoadButton = document.getElementById("listingsLoadButton");
+const listingsImportUntrackedButton = document.getElementById("listingsImportUntrackedButton");
 const listingsStatus = document.getElementById("listingsStatus");
 const listingsSummary = document.getElementById("listingsSummary");
 const listingsResults = document.getElementById("listingsResults");
+const listingsUntrackedCount = document.getElementById("listingsUntrackedCount");
+const bulkRepriceDays = document.getElementById("bulkRepriceDays");
+const bulkRepricePct = document.getElementById("bulkRepricePct");
+const bulkRepricePreviewButton = document.getElementById("bulkRepricePreviewButton");
+const bulkRepriceApplyButton = document.getElementById("bulkRepriceApplyButton");
+const bulkRepriceStatus = document.getElementById("bulkRepriceStatus");
+const bulkRepricePreview = document.getElementById("bulkRepricePreview");
 
 const progressOverlay = document.getElementById("progressOverlay");
 const progressFill = document.getElementById("progressFill");
@@ -500,6 +508,19 @@ function reviewListingLooksStale(card = {}) {
   return false;
 }
 
+// eBay's sold-listing page shows only the item price, never a shipping
+// breakdown — so a comp displayed as its shipping-inclusive totalPrice looks
+// "wrong" next to the real listing (confirmed live 2026-07-13: a $2.89 sold
+// card was showing as $20.21 here). Item-only price is what's actually
+// verifiable by clicking through.
+function compItemOnlyPrice(comp = {}) {
+  if (Number.isFinite(comp.salePrice)) return comp.salePrice;
+  if (Number.isFinite(comp.totalPrice) && Number.isFinite(comp.shippingPrice)) {
+    return comp.totalPrice - comp.shippingPrice;
+  }
+  return comp.price ?? comp.totalPrice ?? null;
+}
+
 function renderCompList(title, comps, emptyLabel, cardId, excludedIds, maxItems = 50) {
   const allRows = Array.isArray(comps) ? comps : [];
   const rows = allRows.slice(0, maxItems);
@@ -510,9 +531,10 @@ function renderCompList(title, comps, emptyLabel, cardId, excludedIds, maxItems 
     ? rows.map((comp) => {
         const compKey = comp.listingId || comp.url || comp.title;
         const excluded = excludedIds && compKey ? excludedIds.has(compKey) : false;
+        const itemPrice = compItemOnlyPrice(comp);
         return `<div class="evidence-item ${excluded ? "excluded" : ""}">
           <div class="evidence-title">${comp.title || "Unknown comp"}</div>
-          <div class="muted">${formatCompSourceLabel(comp.source)} · ${money(comp.totalPrice ?? comp.price ?? comp.salePrice)}${comp.soldAt ? ` · ${comp.soldAt.slice(0, 10)}` : ""}${comp.matchScore != null ? ` · score: ${comp.matchScore.toFixed(2)}` : ""}</div>
+          <div class="muted">${formatCompSourceLabel(comp.source)} · ${money(itemPrice)}${comp.soldAt ? ` · ${comp.soldAt.slice(0, 10)}` : ""}${comp.matchScore != null ? ` · score: ${comp.matchScore.toFixed(2)}` : ""}</div>
           ${comp.url ? `<div class="evidence-url"><a href="${comp.url}" target="_blank" rel="noreferrer">Open listing</a></div>` : ""}
           ${cardId && compKey ? `<label class="comp-toggle"><input type="checkbox" data-card-id="${cardId}" data-comp-key="${compKey}" ${excluded ? "" : "checked"} /> Include</label>` : ""}
         </div>`;
@@ -774,6 +796,20 @@ function disagreementBadge(card) {
   return `<span class="badge bad" title="${label.replace(/"/g, "&quot;")}">⚠ Ximilar/OpenAI disagree</span>`;
 }
 
+// A batch stuck at "processing" from a crashed/killed run looks identical
+// to a live in-flight run with the plain statusBadge above — this is the
+// only visible signal telling them apart (see describeBatchProcessingState
+// in jobs/pipeline.js for how "stuck" is actually decided).
+function stuckBatchBadge(batch) {
+  const processingState = batch?.processingState;
+  if (!processingState?.stuck) return "";
+  const breakdown = Object.entries(processingState.cardBreakdown || {})
+    .map(([status, n]) => `${status}: ${n}`)
+    .join(", ");
+  const title = `${processingState.reason || ""}${breakdown ? ` (${breakdown})` : ""}`.replace(/"/g, "&quot;");
+  return `<span class="badge bad" title="${title}">⚠ Stuck</span>`;
+}
+
 function renderBatches() {
   if (!state.batches.length) {
     batchesList.innerHTML = `<div class="empty-state">No batches yet.</div>`;
@@ -790,6 +826,7 @@ function renderBatches() {
         <div><strong>${batch.id}</strong><div class="muted batch-metadata">${batch.source} · ${count} cards</div></div>
         <div class="card-item-actions batch-actions">
           ${statusBadge(batch.status)}
+          ${stuckBatchBadge(batch)}
           <button class="btn btn-sm btn-outline" data-action="process-batch" data-id="${batch.id}">Process</button>
           <button class="btn btn-sm btn-outline" data-action="create-offers" data-id="${batch.id}">Offers</button>
           <button class="btn btn-sm btn-outline" data-action="update-prices" data-id="${batch.id}">Prices</button>
@@ -934,10 +971,23 @@ function listingRepricingDeltaLabel(repricing) {
   return `${sign}${formatSalesMoney(Math.abs(repricing.deltaAmount))} · ${sign}${Math.round(Math.abs(repricing.deltaPct) * 100)}%`;
 }
 
+// Stale = listed 90+ days with zero sales in the analytics window and no
+// watchers — the strongest "nobody is even looking at this" signal
+// GetMyeBaySelling exposes. Prime candidates for the Relist button, which
+// resets the listing's age so it re-enters search as a fresh listing.
+function isStaleListing(listing) {
+  const days = Number(listing?.daysListed);
+  if (!(Number.isFinite(days) && days >= 90)) return false;
+  if ((listing?.analytics?.soldUnits || 0) > 0) return false;
+  const watchers = Number(listing?.analytics?.watchCount);
+  return !(Number.isFinite(watchers) && watchers > 0);
+}
+
 function renderListingsDashboard(data) {
   if (!listingsResults) return;
   const summary = data?.summary || {};
   const listings = Array.isArray(data?.listings) ? data.listings : [];
+  const staleCount = listings.filter(isStaleListing).length;
 
   if (listingsSummary) {
     listingsSummary.innerHTML = `
@@ -981,7 +1031,20 @@ function renderListingsDashboard(data) {
         <span class="listing-summary-label">In comp range</span>
         <strong>${summary.repricingCounts?.aligned || 0}</strong>
       </div>
+      <div class="listing-summary-card">
+        <span class="listing-summary-label">Stale (90d+, no sales/watchers)</span>
+        <strong>${staleCount}</strong>
+      </div>
     `;
+  }
+
+  if (listingsUntrackedCount) {
+    const untrackedCount = listings.filter((listing) => !listing.cardId).length;
+    listingsUntrackedCount.textContent = untrackedCount
+      ? `${untrackedCount} of ${listings.length} listings have no local card record — use "Import untracked listings" to bring them in.`
+      : listings.length
+        ? `All ${listings.length} listings are tracked.`
+        : "";
   }
 
   if (!listings.length) {
@@ -1017,6 +1080,7 @@ function renderListingsDashboard(data) {
       <div class="listing-pills">
         <span class="listing-pill">${listing.listedAt ? `Started ${salesEscape(salesDateLabel(listing.listedAt))}` : "Start date unknown"}</span>
         <span class="listing-pill">${salesEscape(formatListingDays(listing.daysListed))}</span>
+        ${isStaleListing(listing) ? `<span class="badge bad">Stale</span>` : ""}
         <span class="listing-pill">${listing.bestOfferEnabled ? "Best offer on" : "Best offer off"}</span>
         ${listing.listingId ? `<span class="listing-pill">Item ${salesEscape(listing.listingId)}</span>` : ""}
         <span class="listing-pill">${salesEscape(listingRepricingPill(listing.repricing))}</span>
@@ -1059,6 +1123,7 @@ function renderListingsDashboard(data) {
         ${listing.cardId ? `<button class="btn btn-sm btn-outline" data-action="review-sales-card" data-id="${salesEscape(listing.cardId)}">Open card</button>` : ""}
         <button class="btn btn-sm btn-outline" data-action="manual-comp-reprice" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-offer-id="${salesEscape(listing.offerId || "")}" data-card-id="${salesEscape(listing.cardId || "")}" data-price="${salesEscape(String(listing.currentPrice ?? ""))}" data-title="${salesEscape(listing.title || "")}">${Number.isFinite(listing.repricing?.targetPrice) ? "Refresh comps" : "Check comps"}</button>
         <button class="btn btn-sm btn-outline" data-action="edit-listing-price" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-offer-id="${salesEscape(listing.offerId || "")}" data-format="${salesEscape(listing.format || "")}" data-price="${salesEscape(String(listing.currentPrice ?? ""))}">Edit price</button>
+        <button class="btn btn-sm btn-outline" data-action="relist-listing" data-listing-id="${salesEscape(listing.listingId || "")}" data-sku="${salesEscape(listing.sku || "")}" data-title="${salesEscape(listing.title || "")}">Relist</button>
         ${listing.listingUrl ? `<a class="sales-dashboard-link" href="${salesEscape(listing.listingUrl)}" target="_blank" rel="noopener">View item</a>` : ""}
       </div>
     </div>
@@ -1162,9 +1227,24 @@ function salesFilterSummary(data = {}) {
   };
 }
 
+// A sale that landed far outside the card's own comp range at the moment it
+// was recorded (see detectSalePriceAnomaly in src/app.js) — e.g. the $3 sale
+// of a card whose comps put it around $15, the incident that prompted this
+// check. Passive, visible-in-UI-only; nothing pings anyone.
+function saleAnomalyBadge(cardId) {
+  const card = cardId ? state.cardItems.find((c) => c.id === cardId) : null;
+  const anomaly = card?.saleAnomaly;
+  if (!anomaly) return "";
+  const label = anomaly.reason === "over_comp_range"
+    ? `Sold well above comp range (expected up to ${formatSalesMoney(anomaly.expectedHigh || 0)})`
+    : `Sold well below comp range (expected at least ${formatSalesMoney(anomaly.expectedLow || 0)})`;
+  return `<span class="badge bad" title="${label.replace(/"/g, "&quot;")}">⚠ Price outlier</span>`;
+}
+
 function renderSalesSummary(summary = {}, data = {}) {
   if (!salesSummary) return;
   const filters = salesFilterSummary(data);
+  const flaggedCount = (state.cardItems || []).filter((c) => c.saleAnomaly).length;
   salesSummary.innerHTML = `
     <div class="listing-summary-card sales-summary-filters">
       <span class="listing-summary-label">Active filters</span>
@@ -1198,6 +1278,10 @@ function renderSalesSummary(summary = {}, data = {}) {
     <div class="listing-summary-card">
       <span class="listing-summary-label">App offers marked sold</span>
       <strong>${summary.syncedOffers || 0}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Sales flagged as price outliers</span>
+      <strong>${flaggedCount}</strong>
     </div>
   `;
 }
@@ -1306,7 +1390,7 @@ function renderSalesReport(data) {
                       : `<span>No image</span>`}
                   </div>
                   <div class="sales-card-title">
-                    <div>${salesEscape(card.cardLabel || "Unmatched sale item")}${card.sku ? `<span class="muted"> · ${salesEscape(card.sku)}</span>` : ""}</div>
+                    <div>${salesEscape(card.cardLabel || "Unmatched sale item")}${card.sku ? `<span class="muted"> · ${salesEscape(card.sku)}</span>` : ""} ${saleAnomalyBadge(card.cardId)}</div>
                     <div class="muted">${card.quantity || 0} x ${formatSalesMoney(card.totalAmount || 0)}</div>
                   </div>
                 </div>
@@ -2055,6 +2139,7 @@ const BEST_OFFER_VERDICT_CLASSES = {
 // handler below so the Accept/Decline/Counter buttons only need to carry a
 // bestOfferId in their dataset, not the whole entry's fields.
 let currentBestOffersEntries = [];
+let currentBestOffersResolved = [];
 let currentBestOffersGeneratedAt = null;
 
 function renderBestOfferEntry(entry) {
@@ -2084,19 +2169,51 @@ function renderBestOfferEntry(entry) {
   </article>`;
 }
 
+// Offers that were already handled — by the auto-accept/decline thresholds,
+// the 48-hour expiry clock, a counter, or a manual action — used to just
+// vanish from this tab, which read as "the app missed them." Confirmed live
+// when only 2 of 5 recent offers ever appeared here; the other 3 had been
+// auto-resolved before anyone refreshed.
+const RESOLVED_OFFER_BADGE_CLASSES = {
+  Accepted: "badge good",
+  Declined: "badge bad",
+  Expired: "badge",
+  Countered: "badge warn",
+  Retracted: "badge",
+};
+
+function renderResolvedOfferEntry(entry) {
+  const badgeClass = RESOLVED_OFFER_BADGE_CLASSES[entry.status] || "badge";
+  const when = entry.expirationTime ? new Date(entry.expirationTime).toLocaleDateString() : "";
+  return `<div class="sales-line">
+    <span>
+      <span class="${badgeClass}">${salesEscape(entry.status || "Resolved")}</span>
+      ${formatSalesMoney(entry.offerAmount)} on
+      <a href="${salesEscape(entry.listingUrl)}" target="_blank" rel="noopener">${salesEscape(String(entry.cardTitle || entry.listingUrl).slice(0, 60))}</a>
+      · listed ${formatSalesMoney(entry.currentPrice)} · ${salesEscape(entry.buyerUserId || "buyer")}${when ? ` · ${salesEscape(when)}` : ""}
+    </span>
+  </div>`;
+}
+
 function renderBestOffersList(data) {
   if (!bestOffersList) return;
   const entries = Array.isArray(data?.entries) ? data.entries : [];
+  const resolved = Array.isArray(data?.resolved) ? data.resolved : currentBestOffersResolved;
   currentBestOffersEntries = entries;
+  currentBestOffersResolved = resolved;
   if (data?.generatedAt !== undefined) currentBestOffersGeneratedAt = data.generatedAt;
   bestOffersGeneratedAt.textContent = currentBestOffersGeneratedAt
     ? `Last checked ${new Date(currentBestOffersGeneratedAt).toLocaleString()}`
     : "Never checked yet — click Refresh.";
-  if (!entries.length) {
-    bestOffersList.innerHTML = `<div class="empty-state">No pending Best Offers found.</div>`;
-    return;
-  }
-  bestOffersList.innerHTML = entries.map(renderBestOfferEntry).join("");
+  const pendingHtml = entries.length
+    ? entries.map(renderBestOfferEntry).join("")
+    : `<div class="empty-state">No pending Best Offers found.</div>`;
+  const resolvedHtml = resolved.length
+    ? `<h3>Recent activity (last 14 days)</h3>
+       <div class="muted">Offers already handled — auto-accepted/declined by your thresholds, expired, countered, or answered manually.</div>
+       ${resolved.map(renderResolvedOfferEntry).join("")}`
+    : "";
+  bestOffersList.innerHTML = pendingHtml + resolvedHtml;
 }
 
 // Sends a real, consequential eBay Best Offer response (Accept/Decline/
@@ -2320,6 +2437,136 @@ if (marketHeatDetail) {
 }
 if (listingsLoadButton) {
   listingsLoadButton.addEventListener("click", loadListingsDashboard);
+}
+// Age-based bulk percentage reprice — preview-first by design (the server
+// also re-plans fresh at apply time, so the preview is informational, not
+// a stale contract). The apply runs in the background server-side; poll
+// its status until done.
+function readBulkRepriceInputs() {
+  const olderThanDays = Number(bulkRepriceDays?.value);
+  const percentage = Number(bulkRepricePct?.value);
+  if (!(Number.isFinite(olderThanDays) && olderThanDays >= 1)) {
+    throw new Error("Enter a positive number of days.");
+  }
+  if (!(Number.isFinite(percentage) && percentage !== 0 && Math.abs(percentage) <= 50)) {
+    throw new Error("Enter a non-zero percentage between -50 and 50.");
+  }
+  return { olderThanDays, percentage };
+}
+
+if (bulkRepricePreviewButton) {
+  bulkRepricePreviewButton.addEventListener("click", async () => {
+    if (bulkRepriceApplyButton) bulkRepriceApplyButton.style.display = "none";
+    if (bulkRepricePreview) bulkRepricePreview.textContent = "";
+    let params;
+    try {
+      params = readBulkRepriceInputs();
+    } catch (error) {
+      bulkRepriceStatus.textContent = error.message;
+      return;
+    }
+    bulkRepriceStatus.textContent = "Previewing (checking every active listing)...";
+    bulkRepricePreviewButton.disabled = true;
+    try {
+      const plan = await api("/api/ebay/listings/bulk-reprice", {
+        method: "POST",
+        body: JSON.stringify({ ...params, dryRun: true }),
+      });
+      const direction = params.percentage < 0 ? "decrease" : "increase";
+      bulkRepriceStatus.textContent = `${plan.matched} of ${plan.totalActiveListings} listings match (older than ${params.olderThanDays}d) and would ${direction} by ${Math.abs(params.percentage)}%.`;
+      const skipped = Object.entries(plan.skipped || {})
+        .filter(([, n]) => n > 0)
+        .map(([reason, n]) => `${reason}: ${n}`)
+        .join(", ");
+      const sampleLines = (plan.sample || [])
+        .map((t) => `${String(t.title).slice(0, 55)} — ${formatSalesMoney(t.oldPrice)} → ${formatSalesMoney(t.newPrice)} (${t.daysListed}d)`)
+        .join("\n");
+      if (bulkRepricePreview) {
+        bulkRepricePreview.textContent = [
+          skipped ? `Skipped — ${skipped}` : "",
+          sampleLines ? `Sample:\n${sampleLines}` : "",
+        ].filter(Boolean).join("\n");
+        bulkRepricePreview.style.whiteSpace = "pre-line";
+      }
+      if (plan.matched > 0 && bulkRepriceApplyButton) {
+        bulkRepriceApplyButton.textContent = `Apply to ${plan.matched} listings`;
+        bulkRepriceApplyButton.style.display = "";
+      }
+    } catch (error) {
+      bulkRepriceStatus.textContent = error.message;
+    } finally {
+      bulkRepricePreviewButton.disabled = false;
+    }
+  });
+}
+
+if (bulkRepriceApplyButton) {
+  bulkRepriceApplyButton.addEventListener("click", async () => {
+    let params;
+    try {
+      params = readBulkRepriceInputs();
+    } catch (error) {
+      bulkRepriceStatus.textContent = error.message;
+      return;
+    }
+    const direction = params.percentage < 0 ? "DECREASE" : "INCREASE";
+    if (!confirm(`${direction} the price of every fixed-price listing older than ${params.olderThanDays} days by ${Math.abs(params.percentage)}%?\n\nThis pushes real price changes to eBay. The scheduled repricer will re-anchor to the new prices.`)) return;
+    bulkRepriceApplyButton.disabled = true;
+    bulkRepriceStatus.textContent = "Applying — running in the background...";
+    try {
+      await api("/api/ebay/listings/bulk-reprice", {
+        method: "POST",
+        body: JSON.stringify({ ...params, dryRun: false }),
+      });
+      const poll = setInterval(async () => {
+        try {
+          const status = await api("/api/ebay/listings/bulk-reprice/status");
+          if (status.running) {
+            bulkRepriceStatus.textContent = "Still applying...";
+            return;
+          }
+          clearInterval(poll);
+          bulkRepriceApplyButton.disabled = false;
+          bulkRepriceApplyButton.style.display = "none";
+          const result = status.lastResult || {};
+          bulkRepriceStatus.textContent = result.error
+            ? `Bulk reprice failed: ${result.error}`
+            : `Done — ${result.succeeded || 0}/${result.requested || 0} repriced${result.failed ? `, ${result.failed} failed` : ""}.`;
+          if (bulkRepricePreview && Array.isArray(result.failures) && result.failures.length) {
+            bulkRepricePreview.textContent = `Failures:\n${result.failures.map((f) => `${String(f.title).slice(0, 55)} — ${f.error}`).join("\n")}`;
+          }
+          await loadListingsDashboard();
+        } catch {
+          // transient poll failure — keep polling
+        }
+      }, 4000);
+    } catch (error) {
+      bulkRepriceStatus.textContent = error.message;
+      bulkRepriceApplyButton.disabled = false;
+    }
+  });
+}
+
+if (listingsImportUntrackedButton) {
+  listingsImportUntrackedButton.addEventListener("click", async () => {
+    listingsImportUntrackedButton.disabled = true;
+    listingsStatus.textContent = "Importing untracked listings...";
+    try {
+      const result = await api("/api/listings/import-untracked", { method: "POST" });
+      listingsStatus.textContent = result.imported
+        ? `Imported ${result.imported} listing(s) · ${result.skippedAlreadyTracked || 0} already tracked${
+            result.unidentified?.length
+              ? ` · ${result.unidentified.length} need a manual look in Review (title didn't parse)`
+              : ""
+          }`
+        : `Nothing to import · ${result.skippedAlreadyTracked || 0} listings already tracked.`;
+      await loadListingsDashboard();
+    } catch (error) {
+      listingsStatus.textContent = error.message;
+    } finally {
+      listingsImportUntrackedButton.disabled = false;
+    }
+  });
 }
 if (listingSort) {
   listingSort.addEventListener("change", loadListingsDashboard);
@@ -3249,6 +3496,27 @@ document.addEventListener("click", async (event) => {
       } catch (error) {
         listingsStatus.textContent = error.message || "Repricing failed.";
         throw error;
+      }
+      return;
+    }
+    if (action === "relist-listing") {
+      const listingId = button.dataset.listingId || "";
+      const sku = button.dataset.sku || "";
+      const title = button.dataset.title || "this listing";
+      if (!listingId) return;
+      if (!confirm(`End and immediately relist "${title}"?\n\nThis resets the listing's age so it re-enters eBay search as new — but watchers and views are lost, and eBay may charge a normal insertion fee.`)) return;
+      listingsStatus.textContent = "Relisting...";
+      button.disabled = true;
+      try {
+        const result = await api("/api/ebay/listings/relist", {
+          method: "POST",
+          body: JSON.stringify({ listingId, sku }),
+        });
+        listingsStatus.textContent = `Relisted — new item ${result.newListingId}.`;
+        await loadListingsDashboard();
+      } catch (error) {
+        listingsStatus.textContent = error.message || "Relist failed.";
+        button.disabled = false;
       }
       return;
     }

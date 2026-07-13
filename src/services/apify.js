@@ -853,8 +853,20 @@ export function hasApifyConfig() {
   return Boolean(getApifyConfig().token);
 }
 
-function buildApifyKeywords(metadata = {}) {
+export function buildApifyKeywords(metadata = {}) {
   const queries = [];
+  // Hard gate on real identity BEFORE any keyword assembly: every Apify
+  // keyword is a real, billed actor run, and metadata carrying only the
+  // boolean rookie/autograph flags (no player, no set) assembles to the
+  // literal queries "Rookie RC" / "Autograph" / "Auto" — generic keywords
+  // that match half of eBay, return max-size result sets, and cost ~600x a
+  // targeted query (caught live 2026-07-11: three such runs at $0.06 each
+  // from a single flags-only lookup, re-fired on every scheduled scan).
+  // No identity anchor, no spend — callers already treat "no comps" as a
+  // normal outcome.
+  if (!cleanQueryText(metadata.playerName) && !cleanQueryText(metadata.setName)) {
+    return [];
+  }
   const baseHint = Boolean(metadata.baseHint);
   const parallelHint = baseHint ? null : inferParallelHint(metadata);
   const searchSetName = resolveSearchSetName(

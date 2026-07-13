@@ -326,9 +326,21 @@
               </div>
               <div class="form-actions">
                 <button class="btn btn-outline" id="listingsLoadButton">Load listings</button>
+                <button class="btn btn-outline" id="listingsImportUntrackedButton">Import untracked listings</button>
                 <span class="msg muted" id="listingsStatus"></span>
               </div>
               <div class="muted">The lookback changes sold and revenue analytics only. It does not change days listed.</div>
+              <div class="muted" id="listingsUntrackedCount"></div>
+              <div class="form-row">
+                <label>Bulk reprice: older than (days) <input id="bulkRepriceDays" type="number" min="1" placeholder="90" /></label>
+                <label>Adjust by % (negative = decrease) <input id="bulkRepricePct" type="number" step="0.5" placeholder="-10" /></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-outline" id="bulkRepricePreviewButton">Preview bulk reprice</button>
+                <button class="btn" id="bulkRepriceApplyButton" style="display:none">Apply</button>
+                <span class="msg muted" id="bulkRepriceStatus"></span>
+              </div>
+              <div class="muted" id="bulkRepricePreview"></div>
             </div>
           </section>
           <div id="listingsSummary" class="listings-summary"></div>

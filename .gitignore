@@ -1,10 +1,11 @@
 .env
-data/images/
-data/state.json
+data/
 .DS_Store
 outputs/
+output/
 coverage/
 .vercel
 .aider*
 node_modules/
 work/
+tmp/

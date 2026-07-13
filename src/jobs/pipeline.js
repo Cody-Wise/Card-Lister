@@ -4,6 +4,7 @@ import { getLiveCardComps } from "../services/comps.js";
 import { buildApifyLookupKey, hasApifyConfig, searchApifySoldListings } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
 import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
+import { parallelMatchesTitle } from "../lib/card-query.js";
 import { createAuditEvent, createId, nowIso, withState, withStateReadOnly } from "../lib/store.js";
 
 function dedupeComps(comps) {
@@ -153,12 +154,55 @@ function compMatchesSet(comp, setName) {
   return tokens.some((token) => title.includes(token));
 }
 
+// A comp whose title clearly names a DIFFERENT parallel than the target
+// card's is not relevant evidence no matter how well everything else lines
+// up — confirmed live 2026-07-13: a Blue Refractor/Teal Lazer card's comp
+// list included "Green Lazer #/175", "Red Cracked Ice", and a plain
+// unparalleled base comp, all scoring high because the match-scoring
+// functions only ever ADD points for a parallel match and never subtract
+// for a mismatch. No parallel on the card means nothing to check (a base
+// card doesn't require its comps to say "base").
+function compMatchesParallel(comp, parallel) {
+  if (!parallel) return true;
+  return parallelMatchesTitle(comp?.title || "", parallel);
+}
+
+// Maps one comp (from either the sold or active result array) onto the
+// shape persisted in state.comps. `source` must be passed in by the caller
+// based on which ARRAY the comp came from — not derived from a per-comp
+// `kind` field, since normalizeSoldListing (apify.js), the primary sold-comp
+// path whenever Apify is configured, never sets `kind` at all. The prior
+// `comp.kind === "sold" ? comp.source : "browse_active"` check was false for
+// essentially every real sold comp as a result, silently mislabeling it
+// "browse_active" (confirmed live 2026-07-13 via card_0156's stored comps:
+// sold listings duplicated into the "active listings" list under the wrong
+// source, carrying a sold date and a doubly-nested rawPayload). listingId
+// also used to read `comp.id`, which none of the three comp-normalizer
+// shapes (apify.js, ebay-browse.js toBrowseItemSummary/toBrowseSoldItem)
+// ever set — they all use `listingId` directly.
+export function normalizeStoredComp(comp, source) {
+  return {
+    source,
+    listingId: comp.listingId ?? null,
+    title: comp.title,
+    conditionLabel: comp.conditionLabel,
+    salePrice: comp.salePrice ?? null,
+    shippingPrice: comp.shippingPrice ?? null,
+    totalPrice: comp.totalPrice ?? comp.price ?? null,
+    soldAt: comp.soldAt ?? null,
+    url: comp.url ?? null,
+    matchScore: comp.matchScore ?? null,
+    rawPayload: comp,
+  };
+}
+
 export function isRelevantComp(comp, metadata) {
   return (
     compMentionsPlayer(comp, metadata?.playerName) &&
     compMatchesYear(comp, metadata?.year) &&
     compMatchesCardNumber(comp, metadata?.cardNumber) &&
-    compMatchesSet(comp, metadata?.setName)
+    compMatchesSet(comp, metadata?.setName) &&
+    compMatchesParallel(comp, metadata?.parallel)
   );
 }
 
@@ -476,7 +520,7 @@ function inferSportFromEbayTitle(title) {
   return null;
 }
 
-function inferMetadataFromTitle(title, { provider = "ebay_title", notesPrefix = "eBay title" } = {}) {
+export function inferMetadataFromTitle(title, { provider = "ebay_title", notesPrefix = "eBay title" } = {}) {
   const cleaned = cleanTitle(title);
   if (!cleaned || isAmbiguousChoiceTitle(cleaned)) return null;
   const parallel = matchTitlePattern(cleaned, parallelPatterns);
@@ -988,7 +1032,15 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   cardItem.updatedAt = nowIso();
 
   const deletedKeys = [...originalKeys].filter((key) => !(key in cardItem));
-  return { cardItem, comps, deletedKeys };
+  // Persist the already-relevance-filtered soldComps/activeFiltered (player,
+  // year, set, card#, and now parallel) rather than the raw `comps` — that
+  // raw active list still carries whatever searchEbayListings backfilled in
+  // as "filler" results when strict matches were scarce (confirmed live
+  // 2026-07-13: a Dereck Lively card's stored comps included Ja Morant,
+  // Markelle Fultz, and Julian Strawther listings pulled in via image-only
+  // matching at match scores of 2, with nothing downstream filtering them
+  // back out before they reached state.comps).
+  return { cardItem, comps: { sold: soldComps, active: activeFiltered }, deletedKeys };
 }
 
 // Persists a computed result back onto the card. Does no network I/O; runs
@@ -1018,22 +1070,20 @@ async function writeCardResult(cardItemId, result) {
     }
 
     state.comps = state.comps.filter((comp) => comp.cardItemId !== cardItemId);
-    for (const comp of [...result.comps.sold, ...result.comps.active]) {
+    for (const comp of result.comps.sold) {
       state.comps.push({
         id: createId(state, "comp"),
         cardItemId,
-        source: comp.kind === "sold" ? comp.source : "browse_active",
-        listingId: comp.id,
-        title: comp.title,
-        conditionLabel: comp.conditionLabel,
-        salePrice: comp.salePrice ?? null,
-        shippingPrice: comp.shippingPrice ?? null,
-        totalPrice: comp.totalPrice ?? comp.price ?? null,
-        soldAt: comp.soldAt ?? null,
-        url: comp.url ?? null,
-        matchScore: comp.matchScore ?? null,
-        rawPayload: comp,
         createdAt: nowIso(),
+        ...normalizeStoredComp(comp, comp.source || "sold"),
+      });
+    }
+    for (const comp of result.comps.active) {
+      state.comps.push({
+        id: createId(state, "comp"),
+        cardItemId,
+        createdAt: nowIso(),
+        ...normalizeStoredComp(comp, "browse_active"),
       });
     }
 
@@ -1070,59 +1120,98 @@ export function needsBatchProcessing(card = {}) {
   return !ALREADY_PROCESSED_STATUSES.has(card.status);
 }
 
-export async function processBatch(batchId) {
-  const cardIds = await withState(async (state) => {
-    const batch = state.batches.find((entry) => entry.id === batchId);
-    if (!batch) throw new Error(`Batch not found: ${batchId}`);
-    batch.status = "processing";
-    batch.updatedAt = nowIso();
-    return state.cardItems
-      .filter((item) => item.batchId === batchId && needsBatchProcessing(item))
-      .map((item) => item.id);
-  });
+// Tracks which batches are actively being processed by THIS process right
+// now. batch.status === "processing" alone can't distinguish a live run from
+// one that crashed or was killed mid-run, since that status is committed as
+// its own durable write before any card processing happens (see
+// processBatch below) — a killed process leaves that write behind with
+// nothing left to ever move it forward. This Set starts empty on every
+// server boot, which is exactly the signal we want: any batch still showing
+// "processing" from before a restart is, by definition, not actually running.
+const processingBatchIds = new Set();
 
-  const concurrency = Math.max(
-    1,
-    Math.min(4, Number.parseInt(process.env.CARD_PROCESS_CONCURRENCY || "3", 10) || 3),
-  );
+export function isBatchProcessing(batchId) {
+  return processingBatchIds.has(batchId);
+}
 
-  // batch.status = "processing" was already committed above as its own write,
-  // so — unlike the original single-locked version, where an uncaught error
-  // here would roll back that write too — a per-card failure would otherwise
-  // leave the batch permanently stuck at "processing" with no automatic
-  // recovery. Catch it, still finalize the batch from whatever cards did
-  // complete, then re-throw so the caller sees the same failure it always did
-  // (the route handler has no try/catch and relies on this propagating to the
-  // top-level 500 handler).
-  let processingError = null;
-  try {
-    await runWithConcurrency(cardIds, concurrency, async (cardItemId) => {
-      await processCardItem(cardItemId);
-      await sleep(150);
-    });
-  } catch (error) {
-    processingError = error;
+// Pure and testable: given a batch, its cards, and whether THIS process
+// currently has it marked as actively running, decides whether it's
+// genuinely stuck versus a live in-flight run, plus a per-status card
+// breakdown for the UI tooltip.
+export function describeBatchProcessingState(batch, cards = [], isActivelyProcessing = false) {
+  const cardBreakdown = {};
+  for (const card of Array.isArray(cards) ? cards : []) {
+    const status = card?.status || "unknown";
+    cardBreakdown[status] = (cardBreakdown[status] || 0) + 1;
   }
+  const stuck = batch?.status === "processing" && !isActivelyProcessing;
+  return {
+    stuck,
+    reason: stuck
+      ? 'Marked "processing" but nothing is actively running — likely interrupted by a restart or crash. Click Process to resume; already-processed cards are skipped automatically.'
+      : null,
+    cardBreakdown,
+  };
+}
 
-  const finalizedBatch = await withState(async (state) => {
-    const batch = state.batches.find((entry) => entry.id === batchId);
-    if (!batch) throw new Error(`Batch not found: ${batchId}`);
-    const refreshed = state.cardItems.filter((item) => item.batchId === batchId);
-    const allReady = refreshed.every((item) =>
-      item.status === "priced" || item.status === "ready" || item.status === "listed",
-    );
-    batch.status = processingError ? "needs_review" : allReady ? "ready_to_publish" : "needs_review";
-    batch.updatedAt = nowIso();
-
-    createAuditEvent(state, "batch", batchId, "processed", {
-      cardCount: cardIds.length,
-      ready: allReady,
-      error: processingError ? processingError.message : undefined,
+export async function processBatch(batchId) {
+  processingBatchIds.add(batchId);
+  try {
+    const cardIds = await withState(async (state) => {
+      const batch = state.batches.find((entry) => entry.id === batchId);
+      if (!batch) throw new Error(`Batch not found: ${batchId}`);
+      batch.status = "processing";
+      batch.updatedAt = nowIso();
+      return state.cardItems
+        .filter((item) => item.batchId === batchId && needsBatchProcessing(item))
+        .map((item) => item.id);
     });
 
-    return batch;
-  });
+    const concurrency = Math.max(
+      1,
+      Math.min(4, Number.parseInt(process.env.CARD_PROCESS_CONCURRENCY || "3", 10) || 3),
+    );
 
-  if (processingError) throw processingError;
-  return finalizedBatch;
+    // batch.status = "processing" was already committed above as its own write,
+    // so — unlike the original single-locked version, where an uncaught error
+    // here would roll back that write too — a per-card failure would otherwise
+    // leave the batch permanently stuck at "processing" with no automatic
+    // recovery. Catch it, still finalize the batch from whatever cards did
+    // complete, then re-throw so the caller sees the same failure it always did
+    // (the route handler has no try/catch and relies on this propagating to the
+    // top-level 500 handler).
+    let processingError = null;
+    try {
+      await runWithConcurrency(cardIds, concurrency, async (cardItemId) => {
+        await processCardItem(cardItemId);
+        await sleep(150);
+      });
+    } catch (error) {
+      processingError = error;
+    }
+
+    const finalizedBatch = await withState(async (state) => {
+      const batch = state.batches.find((entry) => entry.id === batchId);
+      if (!batch) throw new Error(`Batch not found: ${batchId}`);
+      const refreshed = state.cardItems.filter((item) => item.batchId === batchId);
+      const allReady = refreshed.every((item) =>
+        item.status === "priced" || item.status === "ready" || item.status === "listed",
+      );
+      batch.status = processingError ? "needs_review" : allReady ? "ready_to_publish" : "needs_review";
+      batch.updatedAt = nowIso();
+
+      createAuditEvent(state, "batch", batchId, "processed", {
+        cardCount: cardIds.length,
+        ready: allReady,
+        error: processingError ? processingError.message : undefined,
+      });
+
+      return batch;
+    });
+
+    if (processingError) throw processingError;
+    return finalizedBatch;
+  } finally {
+    processingBatchIds.delete(batchId);
+  }
 }

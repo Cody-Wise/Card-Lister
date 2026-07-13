@@ -30,10 +30,64 @@ function fakeId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function normalizeBestOfferTerms(bestOfferTerms = {}) {
+function readBestOfferPct(name, fallback) {
+  const parsed = Number.parseFloat(process.env[name] || "");
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : fallback;
+}
+
+// Auto-accept/auto-decline Best Offer thresholds as a percentage of the
+// listing's own asking price (user spec 2026-07-09): accept at or above 85%
+// of asking for listings up to $50, 90% above $50; decline at or below 50%.
+// Returns null when there's no usable price (thresholds are meaningless
+// without one; eBay's plain bestOfferEnabled boolean still applies).
+//
+// Field-shape note, learned the hard way: the REST Inventory API names
+// these autoAcceptPrice/autoDeclinePrice inside listingPolicies
+// .bestOfferTerms, and the Trading API wants BestOfferAutoAcceptPrice/
+// MinimumBestOfferPrice under Item.ListingDetails (NOT BestOfferDetails).
+// Both were confirmed live after four earlier spikes false-negatived by
+// sending wrong names/placement — eBay silently drops unrecognized fields
+// rather than erroring.
+export function computeBestOfferThresholds(price) {
+  const numeric = Number(price);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  const highTierStart = (() => {
+    const parsed = Number.parseFloat(process.env.BEST_OFFER_AUTO_ACCEPT_HIGH_TIER_THRESHOLD || "");
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
+  })();
+  const acceptPct = numeric > highTierStart
+    ? readBestOfferPct("BEST_OFFER_AUTO_ACCEPT_PCT_HIGH_TIER", 0.9)
+    : readBestOfferPct("BEST_OFFER_AUTO_ACCEPT_PCT", 0.85);
+  const declinePct = readBestOfferPct("BEST_OFFER_AUTO_DECLINE_PCT", 0.5);
+  if (declinePct >= acceptPct) {
+    // A misconfigured env pair (decline at/above accept) would make eBay
+    // reject the listing revision outright — fall back to the defaults
+    // rather than propagating a broken configuration to live listings.
+    return {
+      autoAcceptPrice: Number((numeric * (numeric > highTierStart ? 0.9 : 0.85)).toFixed(2)),
+      autoDeclinePrice: Number((numeric * 0.5).toFixed(2)),
+    };
+  }
+  return {
+    autoAcceptPrice: Number((numeric * acceptPct).toFixed(2)),
+    autoDeclinePrice: Number((numeric * declinePct).toFixed(2)),
+  };
+}
+
+function normalizeBestOfferTerms(bestOfferTerms = {}, price = null) {
+  const thresholds = computeBestOfferThresholds(price);
   return {
     ...(bestOfferTerms || {}),
     bestOfferEnabled: true,
+    // Recomputed from the current price on every create/update, so the
+    // thresholds track price changes (including the repricer's) instead of
+    // fossilizing at whatever the price was on first publish.
+    ...(thresholds
+      ? {
+          autoAcceptPrice: { value: thresholds.autoAcceptPrice.toFixed(2), currency: "USD" },
+          autoDeclinePrice: { value: thresholds.autoDeclinePrice.toFixed(2), currency: "USD" },
+        }
+      : {}),
   };
 }
 
@@ -1503,6 +1557,36 @@ async function reviseTradingListingPrice({
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`;
   await requestTradingEbay("ReviseInventoryStatus", xmlBody);
+
+  // ReviseInventoryStatus is a narrow, price/quantity-only call — it can't
+  // touch Best Offer terms, so without this the auto-accept/decline
+  // thresholds set at publish time would silently fossilize at the
+  // original price forever, drifting further out of sync with every
+  // reprice that takes this fast path. Refresh them from the new price via
+  // a follow-up ReviseItem (same Item.ListingDetails placement confirmed
+  // live 2026-07-09 — see computeBestOfferThresholds). Best-effort: a
+  // failure here (e.g. the listing is in an active sale, which blocks any
+  // revision) shouldn't fail the price update that was actually requested.
+  const thresholds = computeBestOfferThresholds(numericPrice);
+  if (thresholds) {
+    try {
+      await requestTradingEbay("ReviseItem", `<?xml version="1.0" encoding="utf-8"?>
+<ReviseItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Item>
+    <ItemID>${xmlEscape(listingId)}</ItemID>
+    <BestOfferDetails>
+      <BestOfferEnabled>true</BestOfferEnabled>
+    </BestOfferDetails>
+    <ListingDetails>
+      <BestOfferAutoAcceptPrice currencyID="USD">${xmlEscape(thresholds.autoAcceptPrice.toFixed(2))}</BestOfferAutoAcceptPrice>
+      <MinimumBestOfferPrice currencyID="USD">${xmlEscape(thresholds.autoDeclinePrice.toFixed(2))}</MinimumBestOfferPrice>
+    </ListingDetails>
+  </Item>
+</ReviseItemRequest>`);
+    } catch (error) {
+      console.warn(`Best Offer threshold refresh failed for listing ${listingId}:`, error.message);
+    }
+  }
 }
 
 async function requestEbay(pathname, { method = "GET", body } = {}) {
@@ -2057,9 +2141,10 @@ async function createLiveOffers(cardItems) {
 
   const requests = await Promise.all(cardItems.map(async (card) => {
     const listingConfig = getEbayListingConfig(card, {});
+    const cardPrice = getCardPrice(card);
     const pricingSummary = buildEbayPricingSummary({
       listingConfig,
-      cardPrice: getCardPrice(card),
+      cardPrice,
     });
     const title = card.ebayTitle || buildEBayTitle(card);
     const description = card.ebayDescription || await buildEBayDescription(card);
@@ -2067,7 +2152,6 @@ async function createLiveOffers(cardItems) {
       sku: card.sku,
       marketplaceId: config.marketplaceId,
       format: listingConfig.format,
-      bestOfferTerms: normalizeBestOfferTerms(),
       categoryId: resolveCategoryIdForCard(card),
       merchantLocationKey: config.merchantLocationKey,
       countryCode: "US",
@@ -2076,6 +2160,20 @@ async function createLiveOffers(cardItems) {
         paymentPolicyId: config.paymentPolicyId,
         fulfillmentPolicyId: getFulfillmentPolicyIdForCard(card),
         returnPolicyId: config.returnPolicyId,
+        // bestOfferTerms lives HERE, nested under listingPolicies — not as a
+        // top-level sibling field. Confirmed live (2026-07-09): a top-level
+        // bestOfferTerms is silently dropped by eBay's bulk_create_offer;
+        // GET on a real created offer showed it completely absent from the
+        // response either way. This regression affected every offer created
+        // since card_0063, all missing Best Offer despite the code always
+        // intending to enable it. Best Offer is a fixed-price-only feature,
+        // so auctions get no terms at all — the old top-level placement
+        // meant eBay never saw them for auctions either, and starting to
+        // send them now that the nesting is right could turn a formerly
+        // ignored field into a real rejection.
+        ...(listingConfig.format === "AUCTION"
+          ? {}
+          : { bestOfferTerms: normalizeBestOfferTerms({}, cardPrice) }),
       },
       includeCatalogProductDetails: false,
       pricingSummary,
@@ -2190,13 +2288,23 @@ async function updateLiveOfferPrices(offers) {
         isThickCard: isThick,
       }),
       returnPolicyId: requestPayload.listingPolicies?.returnPolicyId || getConfig().returnPolicyId,
+      // Nested here, not top-level, and recomputed from the price this
+      // update is pushing — see the matching comment in createLiveOffers
+      // for why (auctions excluded there too).
+      ...(listingConfig.format === "AUCTION"
+        ? {}
+        : {
+            bestOfferTerms: normalizeBestOfferTerms(
+              requestPayload.listingPolicies?.bestOfferTerms,
+              price,
+            ),
+          }),
     };
     const body = {
       ...requestPayload,
       sku: offer.sku,
       marketplaceId: requestPayload.marketplaceId || getConfig().marketplaceId,
       format: listingConfig.format,
-      bestOfferTerms: normalizeBestOfferTerms(requestPayload.bestOfferTerms),
       categoryId: requestPayload.categoryId || resolveCategoryIdForCard(offer),
       merchantLocationKey: requestPayload.merchantLocationKey || getConfig().merchantLocationKey,
       listingDescription: offer.ebayDescription || requestPayload.listingDescription || "",
@@ -2383,6 +2491,68 @@ export async function updateEbayListingPrice({
   };
 }
 
+// Ends a stale listing and immediately relists it fresh — eBay's "Sell
+// Similar"-style age reset, so an old listing re-enters search as a new
+// one. Two paths, matching how the listing was created (the same split the
+// Best Offer backfill confirmed live):
+//   - Inventory-API listings (a REST offer exists for the SKU): withdraw
+//     the offer, then publish it again — eBay issues a fresh listingId.
+//     Trading's Relist calls reject these outright ("Inventory-based
+//     listing management is not currently supported by this tool").
+//   - Everything else: Trading EndFixedPriceItem + RelistFixedPriceItem.
+// Returns { oldListingId, newListingId, via }. The caller is responsible
+// for updating local records to the new listingId.
+export async function relistEbayListing({ listingId, sku = null } = {}) {
+  if (!listingId) throw new Error("Relist requires a listing ID");
+
+  let restOffer = null;
+  if (sku) {
+    const payload = await requestEbay(
+      `/sell/inventory/v1/offer?${new URLSearchParams({
+        sku: String(sku),
+        marketplace_id: getConfig().marketplaceId || "EBAY_US",
+      }).toString()}`,
+    ).catch(() => null);
+    const offers = Array.isArray(payload?.offers) ? payload.offers : [];
+    restOffer = offers.find((o) => String(o?.listing?.listingId || "") === String(listingId)) || null;
+  }
+
+  if (restOffer?.offerId) {
+    await requestEbay(`/sell/inventory/v1/offer/${encodeURIComponent(restOffer.offerId)}/withdraw`, {
+      method: "POST",
+    });
+    const published = await requestEbay(
+      `/sell/inventory/v1/offer/${encodeURIComponent(restOffer.offerId)}/publish`,
+      { method: "POST" },
+    );
+    const newListingId = published?.listingId ? String(published.listingId) : null;
+    if (!newListingId) {
+      throw new Error("Relist republish returned no listing ID — the offer is now WITHDRAWN and needs a manual publish");
+    }
+    return { oldListingId: String(listingId), newListingId, via: "rest" };
+  }
+
+  const endXml = `<?xml version="1.0" encoding="utf-8"?>
+<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${xmlEscape(listingId)}</ItemID>
+  <EndingReason>NotAvailable</EndingReason>
+</EndFixedPriceItemRequest>`;
+  await requestTradingEbay("EndFixedPriceItem", endXml);
+
+  const relistXml = `<?xml version="1.0" encoding="utf-8"?>
+<RelistFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Item>
+    <ItemID>${xmlEscape(listingId)}</ItemID>
+  </Item>
+</RelistFixedPriceItemRequest>`;
+  const relistText = await requestTradingEbay("RelistFixedPriceItem", relistXml);
+  const newListingId = xmlTagValue(relistText, "ItemID");
+  if (!newListingId) {
+    throw new Error("Relist succeeded ending the item but RelistFixedPriceItem returned no new ItemID — the listing is currently ENDED");
+  }
+  return { oldListingId: String(listingId), newListingId: String(newListingId), via: "trading" };
+}
+
 async function publishLiveOffers(offers) {
   const payload = await requestEbay("/sell/inventory/v1/bulk_publish_offer", {
     method: "POST",
@@ -2422,7 +2592,6 @@ export async function createDraftOffers(cardItems) {
           sku: item.sku,
           marketplaceId: getConfig().marketplaceId,
           format: listingConfig.format,
-          bestOfferTerms: normalizeBestOfferTerms(),
           categoryId: resolveCategoryIdForCard(item) || null,
           countryCode: "US",
           listingDescription: buildDescription(item),
@@ -2436,6 +2605,9 @@ export async function createDraftOffers(cardItems) {
             paymentPolicyId: getConfig().paymentPolicyId || null,
             fulfillmentPolicyId: getFulfillmentPolicyIdForCard(item),
             returnPolicyId: getConfig().returnPolicyId || null,
+            ...(listingConfig.format === "AUCTION"
+              ? {}
+              : { bestOfferTerms: normalizeBestOfferTerms({}, getCardPrice(item)) }),
           },
           pricingSummary,
         },

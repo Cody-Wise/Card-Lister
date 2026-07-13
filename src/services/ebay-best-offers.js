@@ -88,15 +88,22 @@ function parseBestOfferBlock(block) {
   };
 }
 
-// Returns an array of PENDING ("Active") best offers for a listing. Returns
-// [] for both "not Best Offer enabled" and "no offers yet" — those are
-// normal, expected states for most listings, not failures. Throws for any
-// other (genuinely unexpected) error response.
-export async function getBestOffersForListing(itemId) {
+// Returns best offers for a listing. The default "Active" filter returns
+// only offers still awaiting a seller response (eBay labels their
+// individual status "Pending" in the response — confirmed live 2026-07-09
+// that the Active REQUEST filter does return them); pass status "All" to
+// also get the full history (Accepted/Declined/Expired/Countered/
+// Retracted), which is what the scan uses so already-resolved offers —
+// including ones the auto-accept/decline thresholds handled before any
+// human looked — stay visible instead of silently vanishing. Returns []
+// for both "not Best Offer enabled" and "no offers yet" — normal, expected
+// states for most listings, not failures. Throws for any other (genuinely
+// unexpected) error response.
+export async function getBestOffersForListing(itemId, { status = "Active" } = {}) {
   const bodyXml = `<?xml version="1.0" encoding="utf-8"?>
 <GetBestOffersRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ItemID>${itemId}</ItemID>
-  <BestOfferStatus>Active</BestOfferStatus>
+  <BestOfferStatus>${encodeXmlEntities(String(status))}</BestOfferStatus>
 </GetBestOffersRequest>`;
 
   const text = await callTradingApi("GetBestOffers", bodyXml);
@@ -174,8 +181,13 @@ export function extractItemIdFromListingUrl(listingUrl) {
   return match ? match[1] : null;
 }
 
-export async function saveBestOffersSnapshot(entries) {
-  const snapshot = { generatedAt: nowIso(), entries };
+// `extras` carries the scan's non-pending context: `resolved` (recently
+// Accepted/Declined/Expired/Countered offers, so the UI can show what
+// happened instead of resolved offers just vanishing between scans) and
+// `notifiedOfferIds` (push-notification dedup — offer ids that have already
+// been pinged, so a scheduled rescan doesn't re-notify the same offer).
+export async function saveBestOffersSnapshot(entries, extras = {}) {
+  const snapshot = { generatedAt: nowIso(), entries, ...extras };
   await fs.mkdir(path.dirname(cachePath), { recursive: true });
   await fs.writeFile(cachePath, JSON.stringify(snapshot, null, 2));
   return snapshot;

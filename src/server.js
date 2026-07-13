@@ -99,6 +99,11 @@ if (Number.isFinite(repriceMinutes) && repriceMinutes > 0) {
       .then((result) => {
         const msg = `evaluated ${result.evaluated}, repriced ${result.repriced}, failed ${result.failed}`;
         console.log(`[reprice] ${msg}`);
+        if (result.failed > 0) {
+          for (const r of result.results || []) {
+            if (r.error) console.warn(`[reprice] failed cardId=${r.cardId} offerId=${r.offerId || "-"}: ${r.error}`);
+          }
+        }
         pingUptimeKuma(pushUrl, { status: result.failed > 0 ? "down" : "up", msg });
       })
       .catch((error) => {
@@ -157,4 +162,30 @@ if (Number.isFinite(daCardWorldMinutes) && daCardWorldMinutes > 0) {
   const daCardWorldTimer = setInterval(runDaCardWorldWatch, daCardWorldMinutes * 60_000);
   daCardWorldTimer.unref();
   console.log(`DA Card World watcher enabled every ${daCardWorldMinutes} min`);
+}
+
+const bestOffersMinutes = Number(process.env.BEST_OFFERS_SCAN_INTERVAL_MINUTES || 0);
+if (Number.isFinite(bestOffersMinutes) && bestOffersMinutes > 0) {
+  // Same module instance the HTTP handler uses, so the scan's internal
+  // in-progress guard covers scheduler and manual-refresh triggers alike —
+  // an overlap would double-send push notifications for the same offer.
+  const { refreshBestOffers } = await import("./app.js");
+  const bestOffersPushUrl = process.env.UPTIME_KUMA_PUSH_URL_BEST_OFFERS || "";
+  const runBestOffersScan = () => {
+    refreshBestOffers()
+      .then((entries) => {
+        const pending = entries.filter((entry) => !entry.error).length;
+        const errored = entries.length - pending;
+        const msg = `${pending} pending offer(s)${errored ? `, ${errored} lookup error(s)` : ""}`;
+        console.log(`[best-offers] ${msg}`);
+        pingUptimeKuma(bestOffersPushUrl, { status: "up", msg });
+      })
+      .catch((error) => {
+        console.error(`[best-offers] scan failed: ${error.message}`);
+        pingUptimeKuma(bestOffersPushUrl, { status: "down", msg: error.message });
+      });
+  };
+  const bestOffersTimer = setInterval(runBestOffersScan, bestOffersMinutes * 60_000);
+  bestOffersTimer.unref();
+  console.log(`Best Offers scan scheduler enabled every ${bestOffersMinutes} min`);
 }

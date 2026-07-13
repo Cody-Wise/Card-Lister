@@ -19,6 +19,9 @@ import {
   processCardItem,
   filterExactMatchComps,
   resolveGradeTarget,
+  isBatchProcessing,
+  describeBatchProcessingState,
+  inferMetadataFromTitle,
 } from "./jobs/pipeline.js";
 import { getLiveCardComps } from "./services/comps.js";
 import {
@@ -28,6 +31,7 @@ import {
   saveBestOffersSnapshot,
   respondToBestOffer,
 } from "./services/ebay-best-offers.js";
+import { sendPushNotification, hasPushNotifyConfig } from "./services/notify.js";
 import {
   fetchEbayActiveListings,
   fetchEbayFulfillmentOrders,
@@ -43,6 +47,7 @@ import {
   buildEBayDescriptionForCard,
   buildItemSpecificsForCard,
   updateEbayListingPrice,
+  relistEbayListing,
 } from "./services/ebay.js";
 import {
   fetchBrowseListingDatesByLegacyId,
@@ -63,6 +68,7 @@ import { handleDriveApiRoutes } from "./routes/drive-routes.js";
 import { handleGradingApiRoutes } from "./routes/grading-routes.js";
 import { handleDaCardWorldApiRoutes } from "./routes/dacardworld-routes.js";
 import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
+import { handleListingImportApiRoutes } from "./routes/listing-import-routes.js";
 import {
   isAuthenticated,
   isAllowedEmail,
@@ -103,8 +109,11 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
-function cleanBatch(batch) {
-  return { ...batch };
+function cleanBatch(batch, cards = []) {
+  return {
+    ...batch,
+    processingState: describeBatchProcessingState(batch, cards, isBatchProcessing(batch.id)),
+  };
 }
 
 function isPublishedOffer(offer) {
@@ -899,6 +908,18 @@ function buildTrackedOffersFromCards(cards = []) {
     });
 }
 
+// Real eBay REST offer ids are purely numeric. Anything else reaching an
+// ebayOfferId field is a leak — confirmed live (2026-07-09): tracked offers
+// with no eBay id yet flow into fetchEbayActiveListings, whose
+// normalizeActiveListing falls back to `offer?.id` for its offerId, and on
+// the next dashboard pass ensureTrackedOfferForListing persisted that LOCAL
+// id ("offer_0100") as if eBay had issued it. 8 records were corrupted this
+// way (7 local-id, 1 with a listingId in the field) and every later REST
+// call using them failed.
+function isRealEbayOfferId(value) {
+  return /^\d+$/.test(String(value || ""));
+}
+
 function ensureTrackedOfferForListing(state, { offerBySku, offerByListingId }, listing = {}) {
   const listingId = listing?.listingId ? String(listing.listingId) : null;
   const sku = listing?.sku ? String(listing.sku) : null;
@@ -911,7 +932,7 @@ function ensureTrackedOfferForListing(state, { offerBySku, offerByListingId }, l
     offer = {
       id: createId(state, "offer"),
       cardItemId: null,
-      ebayOfferId: listing?.offerId || null,
+      ebayOfferId: isRealEbayOfferId(listing?.offerId) ? String(listing.offerId) : null,
       listingId,
       listingUrl: listing?.listingUrl || null,
       sku,
@@ -928,7 +949,7 @@ function ensureTrackedOfferForListing(state, { offerBySku, offerByListingId }, l
   if (listingId && !offer.listingId) offer.listingId = listingId;
   if (listing?.listingUrl && !offer.listingUrl) offer.listingUrl = listing.listingUrl;
   if (sku && !offer.sku) offer.sku = sku;
-  if (listing?.offerId && !offer.ebayOfferId) offer.ebayOfferId = listing.offerId;
+  if (isRealEbayOfferId(listing?.offerId) && !offer.ebayOfferId) offer.ebayOfferId = String(listing.offerId);
   if (listing?.format && !offer.format) offer.format = listing.format;
   if (listing?.status) offer.status = listing.status;
   const normalizedPrice = normalizeSalesCurrencyValue(listing?.currentPrice);
@@ -1151,22 +1172,33 @@ export function buildExternalCompLookupMetadata(card = {}, titleHint = "", image
 
 export function buildOfferExternalCompLookupMetadata(offer = {}, titleHint = "", imageUrl = "") {
   const stableTitle = String(titleHint || offer?.ebayTitle || offer?.title || "").trim();
+  // Actually parse the title for identity instead of hardcoding it empty.
+  // The old always-empty identity left only the rookie/autograph boolean
+  // flags populated, and the Apify keyword builder turned flags-only
+  // metadata into real billed runs for the literal queries "Rookie RC" /
+  // "Autograph" / "Auto" — caught live 2026-07-11 at $0.06 per garbage run,
+  // re-fired by every Best Offers scan while an offer sat pending on an
+  // untracked listing.
+  const parsed = inferMetadataFromTitle(stableTitle, {
+    provider: "offer_comp_lookup",
+    notesPrefix: "Offer comp lookup title",
+  });
   return {
-    playerName: "",
-    year: null,
-    setName: "",
-    cardNumber: "",
-    parallel: "",
+    playerName: parsed?.playerName || "",
+    year: parsed?.year ?? null,
+    setName: parsed?.setName || "",
+    cardNumber: parsed?.cardNumber || "",
+    parallel: parsed?.parallel || "",
     grade: "",
     gradedFlag: false,
     compGradeOverride: null,
     compMatchMode: "auto",
-    rookieFlag: /\b(?:rookie|rc)\b/i.test(stableTitle),
-    variantLabel: "",
-    serialNumber: null,
-    printRun: null,
-    autographFlag: /\b(?:autograph|auto|signed|signature)\b/i.test(stableTitle),
-    sport: inferSportFromTitle(stableTitle),
+    rookieFlag: parsed ? Boolean(parsed.rookieFlag) : /\b(?:rookie|rc)\b/i.test(stableTitle),
+    variantLabel: parsed?.variantLabel || "",
+    serialNumber: parsed?.serialNumber ?? null,
+    printRun: parsed?.printRun ?? null,
+    autographFlag: parsed ? Boolean(parsed.autographFlag) : /\b(?:autograph|auto|signed|signature)\b/i.test(stableTitle),
+    sport: parsed?.sport || inferSportFromTitle(stableTitle),
     titleHint: stableTitle,
     imageUrl: pickImageUrl(
       imageUrl,
@@ -1178,9 +1210,39 @@ export function buildOfferExternalCompLookupMetadata(offer = {}, titleHint = "",
   };
 }
 
-function hasFreshLookupKey(record, metadata = {}) {
+export function hasFreshLookupKey(record, metadata = {}) {
   if (!record) return false;
   return String(record?.apifyLookupKey || "") === buildApifyLookupKey(metadata);
+}
+
+// A search that completed but found zero comps used to get the SAME
+// 15-minute cooldown as a brand-new lookup — indistinguishable from "never
+// tried." Confirmed live (2026-07-11): a fixed pool of ~15-20 genuinely
+// comp-less cards (rare/obscure listings with no real sold history) re-fired
+// a real, billed Apify run on every hydration trigger — hourly-ish, for
+// days, at $0.04-0.06/query each — because nothing about the search ever
+// changes between attempts, yet the cooldown was 4x shorter than the actual
+// retrigger cadence. Split out as its own pure function so this
+// cost-critical decision is unit-testable without mocking the network call.
+export function apifyLookupCooldownMs(card) {
+  return card?.apifyNoCompsFound
+    ? Math.max(1, toPositiveInt(process.env.APIFY_NO_COMPS_COOLDOWN_MINUTES, 24 * 60)) * 60 * 1000
+    : 15 * 60 * 1000;
+}
+
+// The single gate every Apify-comp-lookup call site should check first:
+// skip the paid call when this exact card/identity already came back with
+// zero comps recently. Centralized so every caller (the hydration queue,
+// the reprice scheduler, the Best Offers scan) shares one tested decision
+// instead of each reimplementing — a duplicated copy of this exact
+// condition is what let the reprice scheduler ship with NO gate at all
+// (confirmed 2026-07-11 as the dominant driver of a week of runaway spend,
+// since it hits every repriceable card unconditionally on every tick).
+export function shouldSkipApifyLookup(card, metadata, now = Date.now()) {
+  if (!card?.apifyNoCompsFound) return false;
+  if (!hasFreshLookupKey(card, metadata)) return false;
+  const attemptedAt = Date.parse(String(card?.externalCompLookupAttemptedAt || ""));
+  return Number.isFinite(attemptedAt) && now - attemptedAt < apifyLookupCooldownMs(card);
 }
 
 async function hydrateExternalPricingSummary(
@@ -1201,10 +1263,7 @@ async function hydrateExternalPricingSummary(
   if (lookupKeyMatches && Number.isFinite(existingCompPrice) && existingCompPrice > 0) return card;
   if (!hasApifyConfig()) return card;
 
-  const attemptedAt = Date.parse(String(card?.externalCompLookupAttemptedAt || ""));
-  if (lookupKeyMatches && Number.isFinite(attemptedAt) && Date.now() - attemptedAt < 15 * 60 * 1000) {
-    return card;
-  }
+  if (shouldSkipApifyLookup(card, metadata)) return card;
 
   if (lookupCache.has(card.id)) {
     await lookupCache.get(card.id);
@@ -1236,8 +1295,17 @@ async function hydrateExternalPricingSummary(
       card.externalCompLookupAttemptedAt = nowIso();
       card.apifyLookupKey = buildApifyLookupKey(metadata);
       const imported = Array.isArray(result?.comps) ? result.comps.slice(0, 50) : [];
-      if (!imported.length) return;
+      if (!imported.length) {
+        // A genuine "searched, found nothing" — not an error, so clear any
+        // stale error text from a prior failed attempt, and flag it so the
+        // cooldown check above gives this card a long rest instead of
+        // retrying every hydration trigger indefinitely.
+        card.apifyNoCompsFound = true;
+        delete card.apifyError;
+        return;
+      }
 
+      card.apifyNoCompsFound = false;
       card.externalSoldComps = imported;
       card.externalCompSource = detectedSource || "soldcomps";
       card.externalCompMatch = result?.cardMatch || null;
@@ -1470,7 +1538,50 @@ function assessBestOffer(offerAmount, pricingSummary, hasExactMatch) {
 // exact-match comp lookup whenever a matching local record exists; when it
 // doesn't, the offer is still surfaced with verdict "unconfirmed" rather
 // than being silently skipped.
-async function refreshBestOffers() {
+// A resolved offer stays interesting for this long after its expiration
+// timestamp — long enough to explain "what happened to the offer I heard
+// about" without the snapshot accumulating the account's entire multi-year
+// offer history.
+const RESOLVED_OFFER_LOOKBACK_DAYS = 14;
+
+// Offer statuses that still need (or may still get) a seller response.
+// eBay's response labels a waiting-on-seller offer "Pending" (and
+// occasionally "Active"); everything else — Accepted/Declined/Expired/
+// Countered/Retracted — is history.
+const PENDING_BEST_OFFER_STATUS = /^(active|pending)$/i;
+
+// Guards a scheduled scan against overlapping with a manually-triggered
+// one (or vice versa): both would read the same notified-IDs snapshot and
+// double-send push notifications for the same new offer. Distinct from the
+// route-level bestOffersRefreshInProgress flag, which exists to give the
+// refresh button an immediate 409 — this one silently no-ops instead,
+// which is the right behavior for a background timer.
+let bestOffersScanActive = false;
+
+// Pure and testable: which pending entries deserve a push notification —
+// real offers (not per-listing error placeholders) that haven't already
+// been notified about.
+export function selectNewPendingBestOffers(entries = [], notifiedOfferIds = new Set()) {
+  return (Array.isArray(entries) ? entries : []).filter(
+    (entry) => entry && !entry.error && entry.bestOfferId && !notifiedOfferIds.has(entry.bestOfferId),
+  );
+}
+
+export async function refreshBestOffers() {
+  if (bestOffersScanActive) {
+    console.log("[best-offers] scan already in progress — skipping this trigger");
+    const snapshot = await getBestOffersSnapshot();
+    return Array.isArray(snapshot.entries) ? snapshot.entries : [];
+  }
+  bestOffersScanActive = true;
+  try {
+    return await runBestOffersScan();
+  } finally {
+    bestOffersScanActive = false;
+  }
+}
+
+async function runBestOffersScan() {
   const { trackedOffers, cardById } = await withStateReadOnly(async (state) => {
     const cards = Array.isArray(state.cardItems) ? state.cardItems : [];
     return {
@@ -1481,6 +1592,21 @@ async function refreshBestOffers() {
       cardById: new Map(cards.map((card) => [card.id, { ...card }])),
     };
   });
+  const priorSnapshot = await getBestOffersSnapshot();
+  const notifiedOfferIds = new Set(
+    Array.isArray(priorSnapshot.notifiedOfferIds) ? priorSnapshot.notifiedOfferIds : [],
+  );
+  // A pending offer that was already assessed by a previous scan keeps its
+  // entry (comps included) instead of paying for a fresh comp lookup every
+  // tick — an offer typically stays pending for hours against a ~48h
+  // clock, and re-comping the same card every 2 hours was pure burn
+  // (confirmed live 2026-07-11: the same untracked-listing offer re-fired
+  // billed Apify runs on every scheduled scan).
+  const priorEntryByBestOfferId = new Map(
+    (Array.isArray(priorSnapshot.entries) ? priorSnapshot.entries : [])
+      .filter((entry) => entry?.bestOfferId && !entry.error)
+      .map((entry) => [entry.bestOfferId, entry]),
+  );
 
   // pageSize 200 (the Trading/Inventory API max) x maxPages 5 = up to 1000
   // listings — comfortably covers a large active seller account (confirmed
@@ -1496,13 +1622,60 @@ async function refreshBestOffers() {
   // call-heavy) to just ask every active listing directly.
   const candidates = activeListings.filter((listing) => listing?.listingId || listing?.listingUrl);
 
+  // A scan that fetched NOTHING is an upstream failure (confirmed live
+  // 2026-07-10: GetMyeBaySelling's daily API limit ran out and every scan
+  // for the rest of the day would have overwritten the snapshot — pending
+  // offers included — with an empty one). Keep the prior snapshot; a real
+  // account with zero active listings is not a state this app runs against.
+  if (!candidates.length) {
+    console.warn("[best-offers] active-listing fetch returned nothing (API limit or outage?) — keeping the prior snapshot");
+    return Array.isArray(priorSnapshot.entries) ? priorSnapshot.entries : [];
+  }
+
+  // An ACCEPTED offer ends its listing, dropping it from the active list —
+  // and taking its offer history with it. Confirmed live: the two offers
+  // the auto-accept thresholds converted into sales were invisible to an
+  // active-listings-only scan, exactly the "the app never showed me that
+  // offer" gap this feature exists to close. Sweep listings sold within
+  // the lookback window too (GetBestOffers is a free Trading call).
+  const soldCandidates = [];
+  try {
+    const soldResult = await fetchEbayFulfillmentOrders({
+      days: RESOLVED_OFFER_LOOKBACK_DAYS,
+      pageSize: 100,
+      maxPages: 5,
+    });
+    const activeIds = new Set(candidates.map((listing) => String(listing.listingId || "")));
+    for (const order of soldResult.orders || []) {
+      for (const item of order.lineItems || []) {
+        const listingId = String(item?.legacyItemId || item?.listingId || "");
+        if (!listingId || activeIds.has(listingId)) continue;
+        activeIds.add(listingId);
+        const quantity = lineItemQuantity(item.quantity);
+        const unitPrice = quantity ? (lineItemTotal(item, quantity) || 0) / quantity : null;
+        soldCandidates.push({
+          listingId,
+          listingUrl: null,
+          title: lineItemDisplayName(item),
+          currentPrice: unitPrice,
+          id: null,
+          cardItemId: null,
+        });
+      }
+    }
+  } catch (error) {
+    console.warn("[best-offers] recently-sold sweep skipped:", error.message);
+  }
+
   const entries = [];
+  const resolved = [];
+  const resolvedCutoffMs = Date.now() - RESOLVED_OFFER_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
   // Higher than the old 3 — GetBestOffers is a lightweight, free Trading
   // API call (unlike Apify's paid comp lookups), and with the
   // bestOfferEnabled pre-filter gone every active listing on the account
   // now gets checked, which can be a few hundred for an active seller.
   const concurrency = 8;
-  const queue = [...candidates];
+  const queue = [...candidates, ...soldCandidates];
   await Promise.all(
     Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
       while (queue.length) {
@@ -1512,8 +1685,50 @@ async function refreshBestOffers() {
         const card = listing.cardItemId ? cardById.get(listing.cardItemId) || null : null;
         const listingUrl = listing.listingUrl || `https://www.ebay.com/itm/${itemId}`;
         try {
-          const bestOffers = await getBestOffersForListing(itemId);
+          // "All", not "Active": offers the auto-accept/decline thresholds
+          // (or the 48-hour clock, or a Seller Hub action) already resolved
+          // used to just vanish from this scan, which read as "the app
+          // missed them" — confirmed live when only 2 of 5 recent offers
+          // ever appeared here. Resolved ones now land in the snapshot's
+          // `resolved` list so the tab can show what happened to them.
+          const allOffers = await getBestOffersForListing(itemId, { status: "All" });
+          if (!allOffers.length) continue;
+          for (const offer of allOffers) {
+            if (PENDING_BEST_OFFER_STATUS.test(String(offer.status || ""))) continue;
+            const expiresMs = Date.parse(offer.expirationTime || "");
+            if (!(Number.isFinite(expiresMs) && expiresMs >= resolvedCutoffMs)) continue;
+            resolved.push({
+              cardId: card?.id || null,
+              offerId: listing.id || null,
+              listingUrl,
+              cardTitle: listing.title || card?.ebayTitle || "",
+              currentPrice: normalizeSalesCurrencyValue(listing.currentPrice ?? card?.recommendedPrice),
+              bestOfferId: offer.bestOfferId,
+              offerAmount: offer.price,
+              buyerUserId: offer.buyerUserId,
+              expirationTime: offer.expirationTime,
+              status: offer.status,
+            });
+          }
+          const bestOffers = allOffers.filter((offer) =>
+            PENDING_BEST_OFFER_STATUS.test(String(offer.status || "")),
+          );
           if (!bestOffers.length) continue;
+
+          // Every pending offer here already assessed last scan? Reuse
+          // those entries wholesale — no comp lookup, no Apify spend. A
+          // listing only pays for comps again when a genuinely new offer
+          // shows up on it.
+          const priorEntries = bestOffers.map((offer) => priorEntryByBestOfferId.get(offer.bestOfferId));
+          if (priorEntries.every(Boolean)) {
+            for (const priorEntry of priorEntries) {
+              entries.push({
+                ...priorEntry,
+                currentPrice: normalizeSalesCurrencyValue(listing.currentPrice ?? card?.recommendedPrice) ?? priorEntry.currentPrice,
+              });
+            }
+            continue;
+          }
 
           // Same fallback the reprice scheduler already uses for a card-less
           // offer (see computeReprice in reprice-scheduler.js): a title/
@@ -1523,27 +1738,50 @@ async function refreshBestOffers() {
           // through rather than failing it) — assessBestOffer still reports
           // "unconfirmed" whenever the evidence is thin, so this never
           // overclaims confidence it doesn't have.
-          const imageUrl = pickImageUrl(listing?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
-          const lookupMetadata = card
-            ? buildExternalCompLookupMetadata(card, listing?.title || "", imageUrl)
-            : buildOfferExternalCompLookupMetadata({ ebayTitle: listing?.title || "" }, listing?.title || "", imageUrl);
-          const lookupResult = await withTimeout(
-            getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
-            20000,
-            "Best Offer comp lookup",
-          );
-          const gradeTarget = resolveGradeTarget(card || {});
-          const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
-          const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
-          const pricingSummary = buildEbayPricingSummary(card || { candidateParallel: "" }, filteredSold, filteredActive);
-          const parallelConfirmed =
-            !lookupMetadata.parallel ||
-            pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
-            pricingSummary?.soldParallelFilterMode === "similar_parallel";
-          const hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
+          //
+          // The comp lookup gets its OWN try/catch: it's the slowest, most
+          // failure-prone step (a paid 20s-timeout Apify call), and a
+          // failure here must degrade the verdict to "unconfirmed" — NOT
+          // swallow the offer itself. Confirmed live on the very first
+          // scheduled-scan run: a comp timeout turned the one real pending
+          // offer into a bare error row, which suppressed its push
+          // notification — the exact miss this feature exists to prevent.
+          let pricingSummary = null;
+          let hasExactMatch = false;
+          let compLookupError = null;
+          try {
+            const imageUrl = pickImageUrl(listing?.imageUrl || "", card?.frontImageUrl || "", card?.backImageUrl || "");
+            const lookupMetadata = card
+              ? buildExternalCompLookupMetadata(card, listing?.title || "", imageUrl)
+              : buildOfferExternalCompLookupMetadata({ ebayTitle: listing?.title || "" }, listing?.title || "", imageUrl);
+            // Defense in depth: if this listing has a local card record and
+            // another job (the reprice scheduler) already found and stamped
+            // zero comps for it recently, don't pay for a second lookup here
+            // too. Untracked listings (card === null) always fall through.
+            const lookupResult = shouldSkipApifyLookup(card, lookupMetadata)
+              ? { sold: card.externalSoldComps || [], active: [] }
+              : await withTimeout(
+                  getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
+                  20000,
+                  "Best Offer comp lookup",
+                );
+            const gradeTarget = resolveGradeTarget(card || {});
+            const filteredSold = filterExactMatchComps(lookupResult.sold, lookupMetadata, gradeTarget);
+            const filteredActive = filterExactMatchComps(lookupResult.active, lookupMetadata, gradeTarget);
+            pricingSummary = buildEbayPricingSummary(card || { candidateParallel: "" }, filteredSold, filteredActive);
+            const parallelConfirmed =
+              !lookupMetadata.parallel ||
+              pricingSummary?.soldParallelFilterMode === "exact_parallel" ||
+              pricingSummary?.soldParallelFilterMode === "similar_parallel";
+            hasExactMatch = filteredSold.length > 0 && parallelConfirmed;
+          } catch (error) {
+            compLookupError = error.message;
+          }
 
           for (const bestOffer of bestOffers) {
-            const assessment = assessBestOffer(bestOffer.price, pricingSummary, hasExactMatch);
+            const assessment = compLookupError
+              ? { verdict: "unconfirmed", reason: `Comp lookup failed (${compLookupError}) — reasonableness can't be confirmed.` }
+              : assessBestOffer(bestOffer.price, pricingSummary, hasExactMatch);
             entries.push({
               cardId: card?.id || null,
               offerId: listing.id || null,
@@ -1574,7 +1812,37 @@ async function refreshBestOffers() {
     }),
   );
 
-  await saveBestOffersSnapshot(entries);
+  // Push a notification for each genuinely NEW pending offer (never seen
+  // by a previous scan). Only mark an offer as notified when the push
+  // actually went out — a transient notification failure just retries on
+  // the next scan, since the offer will still be pending and un-notified.
+  const newPending = selectNewPendingBestOffers(entries, notifiedOfferIds);
+  if (newPending.length && hasPushNotifyConfig()) {
+    for (const entry of newPending.slice(0, 10)) {
+      const result = await sendPushNotification({
+        title: `New eBay Best Offer: $${entry.offerAmount}`,
+        message: `${entry.cardTitle || "Listing"} — offer $${entry.offerAmount} vs asking $${entry.currentPrice ?? "?"} from ${entry.buyerUserId || "buyer"}. Expires ${entry.expirationTime ? new Date(entry.expirationTime).toLocaleString("en-US", { timeZone: "America/Chicago" }) : "in ~48h"}.`,
+        clickUrl: entry.listingUrl || null,
+      });
+      if (result.sent) notifiedOfferIds.add(entry.bestOfferId);
+    }
+    if (newPending.length > 10) {
+      const overflow = newPending.slice(10);
+      const result = await sendPushNotification({
+        title: `${overflow.length} more new eBay Best Offers`,
+        message: overflow.map((e) => `$${e.offerAmount} on ${e.cardTitle || e.listingUrl}`).join("\n").slice(0, 900),
+      });
+      if (result.sent) for (const entry of overflow) notifiedOfferIds.add(entry.bestOfferId);
+    }
+  }
+
+  // Resolved offers sorted newest-first for the UI.
+  resolved.sort((a, b) => String(b.expirationTime || "").localeCompare(String(a.expirationTime || "")));
+
+  await saveBestOffersSnapshot(entries, {
+    resolved,
+    notifiedOfferIds: [...notifiedOfferIds],
+  });
   return entries;
 }
 
@@ -1690,6 +1958,92 @@ export function applySoldSaleToOffer(offer, sale = {}) {
   offer.updatedAt = nowIso();
   return changed;
 }
+
+// Flags a just-recorded sale that landed far outside the card's own comp
+// range — e.g. the $3 sale of a card whose real comps put it around $15
+// (the incident that prompted this feature). Compares against soldPrice
+// (per-unit), not soldAmount (the line total), so a multi-quantity sale of
+// fairly-priced units doesn't falsely read as overpriced. Returns null when
+// there's no comp data to compare against (nothing to flag) or the sale
+// falls inside a sane range.
+export function detectSalePriceAnomaly(card, soldAmount) {
+  const pricing = card?.externalPricingSummary;
+  const low = normalizeSalesCurrencyValue(pricing?.low);
+  const high = normalizeSalesCurrencyValue(pricing?.high);
+  const amount = normalizeSalesCurrencyValue(soldAmount);
+  if (!(Number.isFinite(amount) && amount > 0)) return null;
+  if (!(Number.isFinite(low) && low > 0) && !(Number.isFinite(high) && high > 0)) return null;
+
+  if (Number.isFinite(low) && low > 0 && amount < low * 0.7) {
+    return {
+      reason: "under_comp_range",
+      expectedLow: low,
+      expectedHigh: Number.isFinite(high) && high > 0 ? high : null,
+      soldAmount: amount,
+    };
+  }
+  if (Number.isFinite(high) && high > 0 && amount > high * 1.5) {
+    return {
+      reason: "over_comp_range",
+      expectedLow: Number.isFinite(low) && low > 0 ? low : null,
+      expectedHigh: high,
+      soldAmount: amount,
+    };
+  }
+  return null;
+}
+
+// Manual, age-targeted bulk percentage reprice ("cut everything listed 90+
+// days ago by 10%"). Pure and testable: rows are pre-enriched listing
+// records, `now` is injectable, and the return is a plan — nothing is
+// mutated here. Rails, informed by this app's repricer incident history:
+// percentage is capped at ±50 per run, auctions and unknown-age listings
+// are skipped rather than guessed at, per-card absolute repriceMin/Max
+// bounds are honored (same rails the scheduled repricer applies — clamp
+// logic mirrored inline from reprice-scheduler.js's applyAbsoluteBounds,
+// which can't be imported here without closing an import cycle), and any
+// result below eBay's $0.99 fixed-price floor is skipped, not clamped.
+export function planBulkAgeReprice(rows = [], { olderThanDays, percentage, now = Date.now() } = {}) {
+  const days = Number(olderThanDays);
+  const pct = Number(percentage);
+  if (!(Number.isFinite(days) && days >= 1)) {
+    throw new Error("olderThanDays must be a positive number of days");
+  }
+  if (!(Number.isFinite(pct) && pct !== 0 && Math.abs(pct) <= 50)) {
+    throw new Error("percentage must be a non-zero number between -50 and 50");
+  }
+  const cutoffMs = now - days * 24 * 60 * 60 * 1000;
+  const factor = 1 + pct / 100;
+  const targets = [];
+  const skipped = { tooNew: 0, unknownAge: 0, auction: 0, invalidPrice: 0, belowMinimum: 0, unchanged: 0 };
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (String(row?.format || "").toUpperCase() === "AUCTION") { skipped.auction += 1; continue; }
+    const listedMs = Date.parse(row?.listedAt || "");
+    if (!Number.isFinite(listedMs)) { skipped.unknownAge += 1; continue; }
+    if (listedMs > cutoffMs) { skipped.tooNew += 1; continue; }
+    const oldPrice = Number(row?.currentPrice);
+    if (!(Number.isFinite(oldPrice) && oldPrice > 0)) { skipped.invalidPrice += 1; continue; }
+    const min = Number.isFinite(row?.minBound) && row.minBound > 0 ? row.minBound : -Infinity;
+    const max = Number.isFinite(row?.maxBound) && row.maxBound > 0 ? row.maxBound : Infinity;
+    const newPrice = Number(Math.min(max, Math.max(min, oldPrice * factor)).toFixed(2));
+    if (newPrice < 0.99) { skipped.belowMinimum += 1; continue; }
+    if (newPrice === Number(oldPrice.toFixed(2))) { skipped.unchanged += 1; continue; }
+    targets.push({
+      listingId: row.listingId,
+      sku: row.sku || null,
+      title: row.title || "",
+      daysListed: Math.floor((now - listedMs) / 86_400_000),
+      oldPrice: Number(oldPrice.toFixed(2)),
+      newPrice,
+    });
+  }
+  return { targets, skipped };
+}
+
+// Status of the (at most one) in-flight bulk reprice run, polled by the UI
+// — the apply path answers 202 immediately and works in the background,
+// since a few hundred Trading price revisions take minutes.
+let bulkRepriceState = { running: false, lastResult: null };
 
 function normalizeText(value) {
   const raw = String(value || "").trim();
@@ -2276,6 +2630,11 @@ export async function handler(req, res) {
     if (handled) return;
   }
 
+  if (pathname.startsWith("/api/listings/")) {
+    const handled = await handleListingImportApiRoutes(req, res, { pathname });
+    if (handled) return;
+  }
+
   if (req.method === "POST" && pathname === "/api/ebay/generate-description") {
     const body = await readJson(req);
     const cardId = body.cardId;
@@ -2373,8 +2732,15 @@ export async function handler(req, res) {
     // split).
     const apifyUsage = await getApifyUsageStatus();
     return withStateReadOnly(async (state) => {
+      const cardsByBatchId = new Map();
+      for (const card of state.cardItems || []) {
+        if (!card?.batchId) continue;
+        const bucket = cardsByBatchId.get(card.batchId) || [];
+        bucket.push(card);
+        cardsByBatchId.set(card.batchId, bucket);
+      }
       return sendJson(res, 200, {
-        batches: state.batches.map(cleanBatch),
+        batches: state.batches.map((batch) => cleanBatch(batch, cardsByBatchId.get(batch.id) || [])),
         cardItems: state.cardItems.map((card) =>
           cleanCard(card, state.offers.filter((offer) => offer.cardItemId === card.id))),
         // ebayOfferId included so the frontend's per-card "Publish" button
@@ -2648,6 +3014,7 @@ export async function handler(req, res) {
           for (const [cardId, sale] of matchedSalesByCardId.entries()) {
             const resolvedCard = cardById.get(cardId);
             if (!resolvedCard) continue;
+            const wasAlreadySold = resolvedCard.status === "sold";
             const cardChanged = applySoldSaleToCard(resolvedCard, sale);
             if (cardChanged) {
               syncedCards += 1;
@@ -2659,6 +3026,13 @@ export async function handler(req, res) {
                 orderId: sale.orderId || null,
                 listingId: sale.listingId || null,
               });
+              if (!wasAlreadySold) {
+                const anomaly = detectSalePriceAnomaly(resolvedCard, resolvedCard.soldPrice);
+                if (anomaly) {
+                  resolvedCard.saleAnomaly = anomaly;
+                  createAuditEvent(state, "cardItem", resolvedCard.id, "sale_price_anomaly", anomaly);
+                }
+              }
             }
             for (const offer of state.offers || []) {
               const matchesCard = offer?.cardItemId === resolvedCard.id;
@@ -3232,6 +3606,187 @@ export async function handler(req, res) {
     }
   }
 
+  if (req.method === "GET" && pathname === "/api/ebay/listings/bulk-reprice/status") {
+    return sendJson(res, 200, bulkRepriceState);
+  }
+
+  if (req.method === "POST" && pathname === "/api/ebay/listings/bulk-reprice") {
+    const body = await readJson(req);
+    if (bulkRepriceState.running) {
+      return sendJson(res, 409, { error: "A bulk reprice is already running — check status before starting another." });
+    }
+
+    // All I/O happens before any state lock (established discipline), and
+    // the plan is recomputed fresh on BOTH preview and apply — an apply
+    // never trusts a possibly-stale preview.
+    const snapshot = await getState();
+    const trackedOffers = [
+      ...(Array.isArray(snapshot.offers) ? snapshot.offers : []),
+      ...buildTrackedOffersFromCards(snapshot.cardItems || []),
+    ];
+    const activeListings = await fetchEbayActiveListings({ offers: trackedOffers, pageSize: 100, maxPages: 10 });
+    const cardByListingIdLookup = new Map();
+    for (const card of snapshot.cardItems || []) {
+      if (card?.listingId) cardByListingIdLookup.set(String(card.listingId), card);
+    }
+    const seenListingIds = new Set();
+    const rows = [];
+    for (const listing of activeListings) {
+      const listingId = String(listing?.listingId || "");
+      if (!listingId || seenListingIds.has(listingId)) continue;
+      seenListingIds.add(listingId);
+      const card = cardByListingIdLookup.get(listingId) || null;
+      rows.push({
+        listingId,
+        sku: listing?.sku || null,
+        title: listing?.title || card?.ebayTitle || "",
+        format: listing?.format || "FIXED_PRICE",
+        currentPrice: listing?.currentPrice,
+        listedAt: listing?.listedAt || card?.publishedAt || null,
+        minBound: card?.repriceMinPrice,
+        maxBound: card?.repriceMaxPrice,
+      });
+    }
+
+    let plan;
+    try {
+      plan = planBulkAgeReprice(rows, { olderThanDays: body.olderThanDays, percentage: body.percentage });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+
+    // Preview is the default — applying requires an explicit dryRun: false.
+    if (body.dryRun !== false) {
+      return sendJson(res, 200, {
+        dryRun: true,
+        totalActiveListings: rows.length,
+        matched: plan.targets.length,
+        skipped: plan.skipped,
+        sample: plan.targets.slice(0, 12),
+      });
+    }
+
+    const percentage = Number(body.percentage);
+    const olderThanDays = Number(body.olderThanDays);
+    bulkRepriceState = { running: true, startedAt: nowIso(), lastResult: bulkRepriceState.lastResult || null };
+    sendJson(res, 202, { ok: true, applying: plan.targets.length });
+    (async () => {
+      const succeeded = [];
+      const failed = [];
+      const applyQueue = [...plan.targets];
+      await Promise.all(
+        Array.from({ length: Math.max(1, Math.min(5, applyQueue.length)) }, async () => {
+          while (applyQueue.length) {
+            const target = applyQueue.shift();
+            try {
+              await updateEbayListingPrice({
+                listingId: target.listingId,
+                sku: target.sku,
+                format: "FIXED_PRICE",
+                price: target.newPrice,
+              });
+              succeeded.push(target);
+            } catch (error) {
+              failed.push({ ...target, error: error.message.slice(0, 200) });
+            }
+          }
+        }),
+      );
+      await withState(async (state) => {
+        const cardsById = new Map((state.cardItems || []).map((c) => [String(c.listingId || ""), c]));
+        const offersById = new Map();
+        for (const offer of state.offers || []) {
+          if (offer?.listingId) offersById.set(String(offer.listingId), offer);
+        }
+        for (const target of succeeded) {
+          const card = cardsById.get(String(target.listingId));
+          if (card) {
+            card.recommendedPrice = target.newPrice;
+            // Same re-anchor semantics as the single-listing manual price
+            // route: a human just directed this price, so the scheduled
+            // repricer's ±20% band re-anchors to it.
+            card.repriceBaselinePrice = null;
+            card.updatedAt = nowIso();
+          }
+          const offer = offersById.get(String(target.listingId));
+          if (offer) {
+            offer.price = target.newPrice;
+            offer.updatedAt = nowIso();
+          }
+          createAuditEvent(state, "offer", target.listingId, "bulk_age_reprice", {
+            oldPrice: target.oldPrice,
+            newPrice: target.newPrice,
+            percentage,
+            olderThanDays,
+          });
+        }
+        createAuditEvent(state, "offer", "bulk", "bulk_age_reprice_run", {
+          percentage,
+          olderThanDays,
+          requested: plan.targets.length,
+          succeeded: succeeded.length,
+          failed: failed.length,
+        });
+      });
+      bulkRepriceState = {
+        running: false,
+        startedAt: bulkRepriceState.startedAt,
+        finishedAt: nowIso(),
+        lastResult: {
+          percentage,
+          olderThanDays,
+          requested: plan.targets.length,
+          succeeded: succeeded.length,
+          failed: failed.length,
+          failures: failed.slice(0, 20),
+        },
+      };
+      console.log(`[bulk-reprice] ${succeeded.length}/${plan.targets.length} repriced (${failed.length} failed)`);
+    })().catch((error) => {
+      console.error(`[bulk-reprice] run failed: ${error.message}`);
+      bulkRepriceState = { running: false, finishedAt: nowIso(), lastResult: { error: error.message } };
+    });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/ebay/listings/relist") {
+    const body = await readJson(req);
+    if (!body.listingId) return sendJson(res, 400, { error: "listingId required" });
+    let result;
+    try {
+      // Live eBay calls happen BEFORE the state lock (established
+      // discipline: no network I/O while holding it).
+      result = await relistEbayListing({ listingId: body.listingId, sku: body.sku || null });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+    return withState(async (state) => {
+      const oldId = String(result.oldListingId);
+      const newId = String(result.newListingId);
+      const newUrl = `https://www.ebay.com/itm/${newId}`;
+      for (const card of state.cardItems || []) {
+        if (String(card.listingId || "") !== oldId) continue;
+        card.listingId = newId;
+        card.listingUrl = newUrl;
+        card.publishedAt = nowIso();
+        card.updatedAt = nowIso();
+      }
+      for (const offer of state.offers || []) {
+        if (String(offer.listingId || "") !== oldId) continue;
+        offer.listingId = newId;
+        offer.listingUrl = newUrl;
+        offer.publishedAt = nowIso();
+        offer.updatedAt = nowIso();
+      }
+      createAuditEvent(state, "offer", oldId, "relisted", {
+        oldListingId: oldId,
+        newListingId: newId,
+        via: result.via,
+      });
+      return sendJson(res, 200, result);
+    });
+  }
+
   if (req.method === "POST" && pathname === "/api/ebay/listings/update-price") {
     const body = await readJson(req);
     return withState(async (state) => {
@@ -3324,7 +3879,22 @@ export async function handler(req, res) {
     const snapshot = await getBestOffersSnapshot();
     const respondedEntry = (snapshot.entries || []).find((entry) => entry.bestOfferId === bestOfferId);
     const remaining = (snapshot.entries || []).filter((entry) => entry.bestOfferId !== bestOfferId);
-    await saveBestOffersSnapshot(remaining);
+    await saveBestOffersSnapshot(remaining, {
+      // Move the responded-to offer straight into the resolved list (with
+      // the action just taken) instead of dropping it, and keep the
+      // notification-dedup ids — overwriting them here would re-notify
+      // every currently-pending offer on the next scheduled scan.
+      resolved: [
+        ...(respondedEntry
+          ? [{
+              ...respondedEntry,
+              status: { Accept: "Accepted", Decline: "Declined", Counter: "Countered" }[action] || action,
+            }]
+          : []),
+        ...(Array.isArray(snapshot.resolved) ? snapshot.resolved : []),
+      ],
+      notifiedOfferIds: Array.isArray(snapshot.notifiedOfferIds) ? snapshot.notifiedOfferIds : [],
+    });
     if (respondedEntry?.cardId) {
       await withState(async (state) => {
         createAuditEvent(state, "cardItem", respondedEntry.cardId, "best_offer_response", {
