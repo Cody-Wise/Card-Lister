@@ -1,11 +1,40 @@
 import { extractCardMetadata } from "../services/ocr.js";
 import { matchCardIdentity } from "../services/matching.js";
-import { getLiveCardComps } from "../services/comps.js";
-import { buildApifyLookupKey, hasApifyConfig, searchApifySoldListings } from "../services/apify.js";
+import { getLiveCardComps, searchSoldListings, hasSoldCompsProvider } from "../services/comps.js";
+import { buildApifyLookupKey } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
 import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
 import { parallelMatchesTitle } from "../lib/card-query.js";
+import { resolveManualPriceFromFileNames } from "../lib/filename-price.js";
 import { createAuditEvent, createId, nowIso, withState, withStateReadOnly } from "../lib/store.js";
+
+// Local copy of app.js's withTimeout — not imported from there, since app.js
+// itself imports from this file (inferMetadataFromTitle and others), and
+// pipeline.js -> app.js -> pipeline.js would be circular.
+//
+// computeCardResult makes THREE separate unbounded external calls
+// (extractCardMetadata, searchApifySoldListings, getLiveCardComps) and only
+// the first one had a timeout as of the initial fix — confirmed live
+// 2026-07-24 that a reprocess attempt still hung for 12+ minutes even after
+// that fix, because the comp-lookup calls after OCR had no bound at all. All
+// three now go through this same backstop, each with its own label/default
+// so the eventual error is specific about which step actually hung.
+async function withPipelineStepTimeout(promise, { label, timeoutMs, envVar, defaultMs }) {
+  const ms = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : Math.max(1000, Number.parseInt(process.env[envVar], 10) || defaultMs);
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 function dedupeComps(comps) {
   const seen = new Set();
@@ -768,27 +797,39 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
     provider: "existing_title",
     notesPrefix: "Existing listing title",
   });
-  const heuristic = await extractCardMetadata({
-    frontText: frontImage?.ocrText || "",
-    backText: backImage?.ocrText || "",
-    frontFileName: frontImage?.fileName || "",
-    backFileName: backImage?.fileName || "",
-    frontImagePath: frontImage?.storagePath || "",
-    backImagePath: backImage?.storagePath || "",
-    // Was hardcoded false, which silently defeated OCR_PROVIDER=openai: when
-    // Ximilar isn't primary (not configured, or OCR_PROVIDER=openai),
-    // extractCardMetadata() falls through past the useXimilarPrimary block
-    // and checks THIS flag before running full front+back OpenAI vision —
-    // with it false, that check always failed too, so every card fell all
-    // the way through to the heuristic-only result plus a narrow
-    // parallel-only probe (no real player/card-number/sport/autograph
-    // reading at all). extractCardMetadata's own useXimilarPrimary check is
-    // already the single source of truth for provider selection, so it's
-    // safe to always allow OpenAI here — when Ximilar is primary the
-    // function returns before ever consulting this flag.
-    allowOpenAI: true,
-    allowOpenAIParallel: true,
-  });
+  // extractCardMetadata had no ceiling of its own — confirmed live
+  // 2026-07-24: a card sat at ocr_pending indefinitely with zero log output,
+  // because nothing here bounded the OCR/vision call the way every other
+  // network call in this codebase does (see withTimeout in app.js). Wrapping
+  // it here means a hang now surfaces as a clean, logged failure that
+  // processBatch's existing error handling already knows how to recover
+  // from (clears processingBatchIds, marks the batch needs_review) instead
+  // of an infinite silent stall. Not imported from app.js: app.js imports
+  // FROM pipeline.js, so that import would be circular.
+  const heuristic = await withPipelineStepTimeout(
+    extractCardMetadata({
+      frontText: frontImage?.ocrText || "",
+      backText: backImage?.ocrText || "",
+      frontFileName: frontImage?.fileName || "",
+      backFileName: backImage?.fileName || "",
+      frontImagePath: frontImage?.storagePath || "",
+      backImagePath: backImage?.storagePath || "",
+      // Was hardcoded false, which silently defeated OCR_PROVIDER=openai:
+      // when Ximilar isn't primary (not configured, or OCR_PROVIDER=openai),
+      // extractCardMetadata() falls through past the useXimilarPrimary block
+      // and checks THIS flag before running full front+back OpenAI vision —
+      // with it false, that check always failed too, so every card fell all
+      // the way through to the heuristic-only result plus a narrow
+      // parallel-only probe (no real player/card-number/sport/autograph
+      // reading at all). extractCardMetadata's own useXimilarPrimary check is
+      // already the single source of truth for provider selection, so it's
+      // safe to always allow OpenAI here — when Ximilar is primary the
+      // function returns before ever consulting this flag.
+      allowOpenAI: true,
+      allowOpenAIParallel: true,
+    }),
+    { label: "OCR/vision identification", envVar: "OCR_TIMEOUT_MS", defaultMs: 180000 },
+  );
 
   const isPublishedCard =
     cardItem.status === "listed" ||
@@ -849,9 +890,16 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   const existingSoldComps = Array.isArray(cardItem.externalSoldComps) ? cardItem.externalSoldComps : [];
   let apifySoldComps = existingSoldComps;
   const apifyLookupKey = buildApifyLookupKey(mergedOcr);
-  if (hasApifyConfig() && (cardItem.apifyLookupKey !== apifyLookupKey || !apifySoldComps.length)) {
+  if (hasSoldCompsProvider() && (cardItem.apifyLookupKey !== apifyLookupKey || !apifySoldComps.length)) {
     try {
-      const apifyResult = await searchApifySoldListings(mergedOcr);
+      const apifyResult = await withPipelineStepTimeout(searchSoldListings(mergedOcr), {
+        label: "Sold-comp lookup",
+        envVar: "PIPELINE_COMP_LOOKUP_TIMEOUT_MS",
+        // Generous enough for the auto chain's worst case: a full Apify
+        // attempt timing out (~20s) THEN a real two-keyword scrape through
+        // the residential proxy.
+        defaultMs: 90000,
+      });
       apifySoldComps = apifyResult.comps.slice(0, 50);
       cardItem.externalSoldComps = apifySoldComps;
       cardItem.apifyLookupKey = apifyLookupKey;
@@ -866,17 +914,20 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
       cardItem.apifyError = error.message;
     }
   }
-  let comps = await getLiveCardComps(
-    {
-      ...mergedOcr,
-      allowImageOnlyMatches: true,
-      fastMode: true,
-      titleHint: mergedOcr.titleHint || cardItem.ebayTitle || cardItem.title || "",
-    },
-    frontImage?.storagePath || null,
-    backImage?.storagePath || null,
-    match.canonicalCard,
-    apifySoldComps,
+  let comps = await withPipelineStepTimeout(
+    getLiveCardComps(
+      {
+        ...mergedOcr,
+        allowImageOnlyMatches: true,
+        fastMode: true,
+        titleHint: mergedOcr.titleHint || cardItem.ebayTitle || cardItem.title || "",
+      },
+      frontImage?.storagePath || null,
+      backImage?.storagePath || null,
+      match.canonicalCard,
+      apifySoldComps,
+    ),
+    { label: "Live comp lookup", envVar: "PIPELINE_COMP_LOOKUP_TIMEOUT_MS", defaultMs: 45000 },
   );
   const preliminaryRelevantComps = {
     sold: dedupeComps(comps.sold).filter((comp) => isRelevantComp(comp, mergedOcr)),
@@ -937,6 +988,33 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   cardItem.candidateLeague = mergedOcr.league || null;
   cardItem.serialNumber = mergedOcr.serialNumber || null;
   cardItem.printRun = mergedOcr.printRun || null;
+
+  // Manual price check off the scan filename ("LebronJames$7-01.jpg" -> 7).
+  // Cards are scanned with eBay's card scanner and the scanner writes the
+  // price they judged into the filename, so this is a HUMAN read — worth
+  // more than anything the app currently derives on its own, since sold
+  // comps went behind eBay's login wall and the app's pricing is otherwise
+  // inferred from other sellers' asks. Recorded here as evidence only; it
+  // does not silently override the computed price.
+  const manualPrice = resolveManualPriceFromFileNames(frontImage?.fileName, backImage?.fileName);
+  if (manualPrice.price != null) {
+    cardItem.manualPriceCheck = manualPrice.price;
+    cardItem.manualPriceCheckSource = `filename:${manualPrice.source}`;
+    cardItem.manualPriceCheckAt = nowIso();
+    cardItem.manualPriceCheckConflict = manualPrice.conflict;
+    // Deliberately NOT appended to ocrNotes: that field is reassigned
+    // wholesale from mergedOcr.notes further down this same function, so
+    // anything written to it here would be silently discarded.
+    cardItem.manualPriceCheckNote = manualPrice.note || null;
+  } else {
+    // Clear stale values so a re-scan without a price in the filename
+    // doesn't leave a previous run's number sitting there looking current.
+    delete cardItem.manualPriceCheck;
+    delete cardItem.manualPriceCheckSource;
+    delete cardItem.manualPriceCheckAt;
+    delete cardItem.manualPriceCheckConflict;
+    delete cardItem.manualPriceCheckNote;
+  }
   const metadataConfidence = typeof mergedOcr.confidence === "number" ? mergedOcr.confidence : 0.45;
   cardItem.confidenceScore = Number(
     (match.canonicalCard ? (metadataConfidence + match.confidence) / 2 : metadataConfidence).toFixed(2),
@@ -950,9 +1028,13 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   cardItem.pricingEvidence = pricing.evidence;
   cardItem.externalSoldComps = soldComps.slice(0, 50);
   const hasAnyComps = Boolean(soldComps.length || activeFiltered.length);
+  // The sold-comp fetch above already stamped externalCompSource with the
+  // provider that actually answered ("apify" or "ebay_scraper") — keep it
+  // rather than re-deriving from config here, which mislabeled scraper
+  // results as "soldcomps" once the provider chain existed.
   const compSource =
-    hasApifyConfig() && !cardItem.apifyError
-      ? "soldcomps"
+    hasSoldCompsProvider() && !cardItem.apifyError
+      ? cardItem.externalCompSource || "soldcomps"
       : hasAnyComps
         ? "ebay_image_search"
         : cardItem.externalCompSource || null;

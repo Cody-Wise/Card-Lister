@@ -473,6 +473,37 @@ function applyConditionModeToGradeSelect() {
   }
 }
 
+// eBay's TCG/CCG category shows different labels for the same 4 raw-
+// condition tiers sports uses — "Lightly Played (Excellent)" instead of
+// "Excellent", etc. (confirmed live 2026-07-15 against eBay's own listing
+// form). Same underlying option VALUES on purpose: the backend's value-id
+// mapping (resolveRawConditionDescriptorValueId, src/services/ebay.js)
+// already keys off these exact value strings and already resolves the
+// correct eBay condition-descriptor id per category — this only needed to
+// change what the reviewer SEES, not what gets stored or sent.
+const TCG_CONDITION_LABELS = {
+  "Near Mint or Better": "Near Mint or Better",
+  Excellent: "Lightly Played (Excellent)",
+  "Very Good": "Moderately Played (Very Good)",
+  Poor: "Heavily Played (Poor)",
+};
+const SPORTS_CONDITION_LABELS = {
+  "Near Mint or Better": "Near Mint or Better",
+  Excellent: "Excellent",
+  "Very Good": "Very Good",
+  Poor: "Poor",
+};
+
+function applyTcgLabelsToGradeSelect(isTcg) {
+  if (!reviewGrade) return;
+  const ungradedGroup = reviewGrade.querySelector('optgroup[data-condition-mode="USED_VERY_GOOD"]');
+  if (!ungradedGroup) return;
+  const labels = isTcg ? TCG_CONDITION_LABELS : SPORTS_CONDITION_LABELS;
+  for (const option of ungradedGroup.querySelectorAll("option")) {
+    if (labels[option.value]) option.textContent = labels[option.value];
+  }
+}
+
 function formatCompSourceLabel(source) {
   const normalized = String(source || "").toLowerCase();
   // SoldComps.com and CardHedge were both fully removed — the Apify actor
@@ -483,6 +514,7 @@ function formatCompSourceLabel(source) {
   // but the label itself should read "Apify", not the deprecated
   // provider's name, so it doesn't look like SoldComps.com is still in use.
   if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "Apify";
+  if (normalized === "ebay_scraper") return "eBay Sold (scraped)";
   if (normalized === "browse_active") return "eBay Browse";
   return source || "unknown";
 }
@@ -603,6 +635,24 @@ function renderReviewSummary(detail) {
     `Print run: ${card.printRun || "n/a"}${card.serialNumber ? ` · Serial: ${card.serialNumber}` : ""} · Parallel source: ${card.parallelProvider || "n/a"} · Comp grade: ${card.compGradeOverride || "Auto detect"} · Comp match: ${card.compMatchMode || "auto"}`,
     gradedSummary || "Grade: n/a",
     `Sold comps: ${soldCount} · Active: ${activeCount}`,
+    // Human price read off the scan filename. Shown next to the computed
+    // price on purpose: with sold comps unavailable, the app's own number
+    // comes from other sellers' asks, so a person's judgement is the more
+    // reliable of the two and a big gap between them is worth noticing.
+    ...(card.manualPriceCheck != null
+      ? [
+          `📋 Manual price check: $${Number(card.manualPriceCheck).toFixed(2)}${
+            card.recommendedPrice != null
+              ? ` (app says $${Number(card.recommendedPrice).toFixed(2)})`
+              : ""
+          }`,
+        ]
+      : []),
+    ...(card.manualPriceCheckConflict
+      ? [
+          `⚠ Filename price conflict — front $${card.manualPriceCheckConflict.front}, back $${card.manualPriceCheckConflict.back}. Using the front scan; check the scan names.`,
+        ]
+      : []),
     ...(isApifySource && card.apifySearchQuery ? [`Comp search query: ${card.apifySearchQuery}`] : []),
     ...(weightLines.length ? [`Pricing: ${weightLines.join(" · ")}`] : []),
     ...(card.pricingReason ? [`Reason: ${card.pricingReason}`] : []),
@@ -666,6 +716,7 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   reviewDescription.value = needsFreshPreview ? "" : card.ebayDescription || "";
   ebayListingTitle.value = needsFreshPreview ? "" : card.ebayTitle || "";
   ebayListingCondition.value = card.candidateCondition === "graded" ? "LIKE_NEW" : "USED_VERY_GOOD";
+  applyTcgLabelsToGradeSelect(Boolean(card.isTcgImport));
   // Reveal the matching optgroup (Ungraded vs the grader groups) before
   // restoring the saved grade — setting .value against a currently-hidden/
   // disabled optgroup's option isn't reliable across browsers.
@@ -940,6 +991,7 @@ function listingRepricingSourceLabel(source) {
   // Apify is the current provider for both "apify" and legacy "soldcomps"
   // source values.
   if (normalized.startsWith("apify") || normalized.startsWith("soldcomps")) return "Apify";
+  if (normalized === "ebay_scraper") return "eBay Sold (scraped)";
   return "Suggested";
 }
 

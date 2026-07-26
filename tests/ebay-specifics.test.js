@@ -246,3 +246,33 @@ test("buildItemSpecificsForCard still uses the real game name for a recognized T
   });
   assert.deepEqual(specifics.Game, ["Pokémon TCG"]);
 });
+
+// Real live 400 (2026-07-15, errorId 25002, "The item specific Game is
+// missing") on "2020 Galaxy-Eyes Full Armor Photon Dragon #RA01-EN037" — a
+// Yu-Gi-Oh card whose title/set/player never mention the game at all
+// (normal for Yu-Gi-Oh, unlike Pokémon/MTG set names), AND whose set name
+// was empty, so the old title/set/player/notes-only haystack plus the
+// setName-only fallback both came up empty. Manufacturer had already
+// correctly resolved to "Yu-Gi-Oh" via inferBrand — brand just wasn't part
+// of the Game-detection signal.
+test("buildItemSpecificsForCard recognizes hyphenated Yu-Gi-Oh via brand when title/set/player give no signal (real live 400)", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidatePlayer: "Galaxy-Eyes Full Armor Photon Dragon",
+    candidateCardNumber: "RA01-EN037",
+    candidateBrand: "Yu-Gi-Oh",
+    // candidateSetName intentionally omitted — empty on the real card.
+  });
+  assert.deepEqual(specifics.Type, ["CCG Individual Card"]);
+  assert.deepEqual(specifics.Manufacturer, ["Yu-Gi-Oh"]);
+  assert.deepEqual(specifics.Game, ["Yu-Gi-Oh!"]);
+});
+
+test("buildItemSpecificsForCard falls back to brand for Game when both title/set/player and set name give no signal", () => {
+  const specifics = buildItemSpecificsForCard({
+    isTcgImport: true,
+    candidateBrand: "Some Obscure TCG Brand",
+    // No candidateSetName, no recognized keyword anywhere.
+  });
+  assert.deepEqual(specifics.Game, ["Some Obscure TCG Brand"]);
+});

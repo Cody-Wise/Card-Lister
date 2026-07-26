@@ -1222,10 +1222,25 @@ function buildItemSpecifics(card) {
   const tcgGame =
     isCcgKind
       ? (() => {
-          const haystack = String([setName, player, card.ebayTitle, card.notes].filter(Boolean).join(" ")).toLowerCase();
+          // brand included alongside title/set/player/notes — confirmed live
+          // (2026-07-15) on a Yu-Gi-Oh card ("Galaxy-Eyes Full Armor Photon
+          // Dragon #RA01-EN037") whose card/set name never mentions the game
+          // at all (normal for Yu-Gi-Oh — unlike Pokémon/MTG, set names are
+          // just set codes), but whose Manufacturer/brand had already
+          // correctly resolved to "Yu-Gi-Oh" via inferBrand — that signal
+          // just wasn't part of this haystack. setName was ALSO empty on
+          // that card, so the fallback below produced null too: a real 400
+          // (errorId 25002, "The item specific Game is missing").
+          const haystack = String(
+            [setName, player, card.ebayTitle, card.notes, brand].filter(Boolean).join(" "),
+          ).toLowerCase();
           if (/\b(pokemon|pok[eé]mon)\b/.test(haystack)) return "Pokémon TCG";
           if (/\b(magic|mtg)\b/.test(haystack)) return "Magic: The Gathering";
-          if (/\b(yugioh|yu gi oh)\b/.test(haystack)) return "Yu-Gi-Oh!";
+          // Hyphenated ("Yu-Gi-Oh") is the standard brand spelling and is how
+          // inferBrand normalizes it — the old pattern only matched "yugioh"
+          // (no separator) or "yu gi oh" (space-separated), missing the most
+          // common real-world form entirely.
+          if (/\byu[\s-]?gi[\s-]?oh\b/.test(haystack)) return "Yu-Gi-Oh!";
           if (/\blorcana\b/.test(haystack)) return "Disney Lorcana";
           if (/\bone piece\b/.test(haystack)) return "One Piece CCG";
           if (/\bdigimon\b/.test(haystack)) return "Digimon Card Game";
@@ -1234,7 +1249,7 @@ function buildItemSpecifics(card) {
           // field for a game not in the list above (confirmed live: an
           // analogous missing Franchise value on the non-sport side was a
           // hard 400, errorId 25002).
-          return setName || null;
+          return setName || brand || null;
         })()
       : null;
   const nonSportFranchise =

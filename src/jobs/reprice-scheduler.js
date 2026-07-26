@@ -17,6 +17,7 @@
 import { getLiveCardComps } from "../services/comps.js";
 import { updateEbayListingPrice } from "../services/ebay.js";
 import { buildApifyLookupKey } from "../services/apify.js";
+import { computeActiveListingFallbackPrice } from "../services/active-listing-pricing.js";
 import { filterExactMatchComps, resolveGradeTarget } from "./pipeline.js";
 import {
   buildExternalCompLookupMetadata,
@@ -145,8 +146,11 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
     return { skipped: "apify-cooldown" };
   }
 
+  // allowApify: false — this is an unattended job running across every
+  // repriceable card every 360 minutes forever; it must compare against
+  // eBay's own live data only and never trigger a real, billed Apify run.
   const lookupResult = await withTimeout(
-    getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl),
+    getLiveCardComps(lookupMetadata, null, null, null, card?.externalSoldComps || [], imageUrl, false),
     lookupTimeoutMs(),
     "eBay image search sold comp lookup",
   );
@@ -217,12 +221,71 @@ async function computeReprice({ card: cardSnapshot, offer: offerSnapshot, thresh
   const repricing = buildManualRepricingSignal(card, offer, currentPrice);
 
   if (!isExactMatch) {
+    // Sold comps are unavailable (eBay gated sold/completed listings behind
+    // sign-in on 2026-07-26 — see active-listing-pricing.js), so without
+    // this branch the scheduler would simply never act again. Active
+    // listings are ASKS, not sales, so unattended pushes from them are
+    // allowed ONLY under AUTO_ACTIVE_PRICING_MAX_PRICE (default $10), where
+    // a wrong price costs a few dollars. Anything at or above that stays a
+    // human-approved suggestion, which is where this session's real
+    // repricing incidents would have been caught.
+    const activeFallback = computeActiveListingFallbackPrice({
+      card,
+      offer,
+      currentPrice,
+      activeListings: filteredActive,
+      lookupMetadata,
+    });
+    if (!activeFallback.eligible) {
+      return {
+        card,
+        offer,
+        repriced: false,
+        skippedReason: activeFallback.skippedReason || "no-exact-match",
+        repricing,
+        activeListingPricing: activeFallback.detail || null,
+      };
+    }
+    const clamped = clampRepriceTarget(activeFallback.price, baselinePrice);
+    const boundedPrice = normalizeSalesCurrencyValue(
+      applyAbsoluteBounds(clamped.price, card?.repriceMinPrice, card?.repriceMaxPrice),
+    );
+    if (!(Number.isFinite(boundedPrice) && boundedPrice > 0) || Math.abs(boundedPrice - currentPrice) < threshold) {
+      return {
+        card,
+        offer,
+        repriced: false,
+        skippedReason: "active-fallback-below-threshold",
+        repricing,
+        activeListingPricing: activeFallback.detail,
+      };
+    }
+    await updateEbayListingPrice({
+      offerId: offer?.ebayOfferId || null,
+      sku: offer?.sku || card?.sku || null,
+      listingId: card?.listingId || offer?.listingId || null,
+      price: boundedPrice,
+    });
+    if (offer) {
+      offer.price = boundedPrice;
+      offer.updatedAt = nowIso();
+    }
+    if (card) {
+      card.recommendedPrice = boundedPrice;
+      card.updatedAt = nowIso();
+    }
     return {
       card,
       offer,
-      repriced: false,
-      skippedReason: "no-exact-match",
+      repriced: true,
+      oldPrice: currentPrice,
+      newPrice: boundedPrice,
+      rawTargetPrice: activeFallback.price,
+      baselinePrice,
+      clampedToBounds: clamped.clamped || boundedPrice !== clamped.price,
       repricing,
+      pricedFrom: "active_listings",
+      activeListingPricing: activeFallback.detail,
     };
   }
 
