@@ -282,3 +282,85 @@ export function computeActiveListingFallbackPrice({
   }
   return { eligible: true, price: result.price, detail: result };
 }
+
+// ---------------------------------------------------------------------------
+// Manual-price anchoring.
+//
+// The price written into the scan filename is a HUMAN read of the card (see
+// lib/filename-price.js) and is the most trustworthy number we have: sold
+// comps are gone (eBay sign-in wall) and the active-listing figure is
+// derived from what other sellers are ASKING, which skews high and gets
+// dragged around by thin or delusional markets.
+//
+// So the manual price anchors the result — but it isn't a ceiling. A card
+// can genuinely heat up after it was scanned (a player pops off, a parallel
+// gets chased), and the live market is the only signal that sees that. The
+// rule below: never price BELOW the human's read, but allow the market to
+// pull the price UP, capped at a multiple of that read so a single absurd
+// asking price can't run away with it.
+// ---------------------------------------------------------------------------
+
+// How far above the manual price the live market may push. 2.0 = a card may
+// list at up to double what the scanner judged, if active listings support
+// it. Set to 1 to make the manual price an exact ceiling as well as a floor.
+export function manualAnchorMaxMultiple() {
+  const parsed = Number(process.env.MANUAL_ANCHOR_MAX_MULTIPLE);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 2;
+}
+
+export function applyManualPriceAnchor(marketPrice, manualPrice, options = {}) {
+  const manual = Number(manualPrice);
+  const market = Number(marketPrice);
+  const hasManual = Number.isFinite(manual) && manual > 0;
+  const hasMarket = Number.isFinite(market) && market > 0;
+
+  // No human read: fall back to the market figure unchanged.
+  if (!hasManual) {
+    return {
+      price: hasMarket ? Math.round(market * 100) / 100 : null,
+      basis: hasMarket ? "market" : "none",
+      manualPrice: null,
+      marketPrice: hasMarket ? market : null,
+      reason: hasMarket ? "no manual price on file — using the live-listing price" : "no price available",
+    };
+  }
+  // Human read but no usable market data: trust the human outright.
+  if (!hasMarket) {
+    return {
+      price: Math.round(manual * 100) / 100,
+      basis: "manual",
+      manualPrice: manual,
+      marketPrice: null,
+      reason: "no usable active listings — using the manual price check",
+    };
+  }
+
+  const maxMultiple = Number.isFinite(options.maxMultiple) ? options.maxMultiple : manualAnchorMaxMultiple();
+  const ceiling = manual * maxMultiple;
+
+  if (market <= manual) {
+    return {
+      price: Math.round(manual * 100) / 100,
+      basis: "manual_floor",
+      manualPrice: manual,
+      marketPrice: market,
+      reason: `live listings ($${market.toFixed(2)}) are at or below the manual check ($${manual.toFixed(2)}) — holding the manual price`,
+    };
+  }
+  if (market >= ceiling) {
+    return {
+      price: Math.round(ceiling * 100) / 100,
+      basis: "manual_capped",
+      manualPrice: manual,
+      marketPrice: market,
+      reason: `live listings ($${market.toFixed(2)}) run hot but exceed ${maxMultiple}x the manual check — capping at $${ceiling.toFixed(2)}`,
+    };
+  }
+  return {
+    price: Math.round(market * 100) / 100,
+    basis: "market_hot",
+    manualPrice: manual,
+    marketPrice: market,
+    reason: `live listings ($${market.toFixed(2)}) run above the manual check ($${manual.toFixed(2)}) — following the market`,
+  };
+}

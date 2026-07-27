@@ -20,20 +20,55 @@ async function withProviderTimeout(promise, ms) {
   }
 }
 
+// Sold-comp provider selection. SOLD_COMPS_PROVIDER:
+//   "off" (DEFAULT) — no sold-comp lookups at all
+//   "apify"         — the Apify actor
+//   "scraper"       — the Playwright eBay scraper
+//   "auto"          — Apify first (bounded), scraper on failure
+//
+// Default is OFF as of 2026-07-26, at the user's direction, because neither
+// provider is currently trustworthy:
+//   - Apify's actor (caffein.dev~ebay-sold-listings) has been unreliable —
+//     it hung for 12+ minutes in production, and separately produced a week
+//     of runaway billing.
+//   - The scraper can't work at all: eBay put sold/completed listings behind
+//     sign-in (see ebay-sold-scraper.js for the controlled test).
+// With this off, pricing comes from ACTIVE listings instead (see
+// active-listing-pricing.js), which is the one eBay signal still open to us.
+// Set SOLD_COMPS_PROVIDER=apify to re-enable if the actor recovers, or
+// "auto" once there's a working fallback worth chaining to.
+function soldCompsProvider() {
+  return String(process.env.SOLD_COMPS_PROVIDER || "off").toLowerCase();
+}
+
+export function isSoldCompsDisabled() {
+  const provider = soldCompsProvider();
+  return provider === "off" || provider === "none" || provider === "disabled";
+}
+
 export function hasSoldCompsProvider() {
+  if (isSoldCompsDisabled()) return false;
   return hasApifyConfig() || hasEbaySoldScraperConfig();
 }
 
-// Provider chain for sold comps. SOLD_COMPS_PROVIDER:
-//   "auto" (default) — Apify first (bounded), scraper on failure/timeout
-//   "apify"          — Apify only (old behavior)
-//   "scraper"        — scraper only (e.g. while Apify's actor is broken)
 // Both providers return the same contract ({source, comps, importedCount,
 // rejectedCount, sampleTitles, keywordsUsed}) and run the same
 // normalization/gating (parseApifySoldListings), so callers don't care
-// which one answered.
+// which one answered — including the disabled case, which returns an empty
+// result rather than throwing. Callers already treat "no sold comps" as a
+// normal outcome, so this degrades cleanly to active-listing pricing.
 export async function searchSoldListings(metadata = {}) {
-  const provider = String(process.env.SOLD_COMPS_PROVIDER || "auto").toLowerCase();
+  const provider = soldCompsProvider();
+  if (isSoldCompsDisabled()) {
+    return {
+      source: "disabled",
+      comps: [],
+      importedCount: 0,
+      rejectedCount: 0,
+      sampleTitles: [],
+      keywordsUsed: [],
+    };
+  }
   if (provider === "scraper") return searchEbaySoldScraperListings(metadata);
   if (provider === "apify") return searchApifySoldListings(metadata);
   if (hasApifyConfig()) {
@@ -94,17 +129,23 @@ export async function getLiveCardComps(
   // since eBay decommissioned findCompletedItems. Every other caller
   // (initial pipeline processing, manual reprice/review actions, Best
   // Offers scan) goes through the full provider chain.
-  const soldSource = allowApify && hasSoldCompsProvider()
-    ? await searchSoldListings(metadata)
-    : {
-        comps: await searchEbaySoldListings({
-          metadata,
-          frontImagePath,
-          backImagePath,
-          imageUrl,
-          matchedListings: liveActive,
-        }),
-      };
+  // When sold comps are switched off entirely there's nothing to fall back
+  // to: the eBay-native path below calls findCompletedItems, which eBay
+  // decommissioned, so it's a guaranteed-empty round trip. Skip it rather
+  // than spend a request proving that every time.
+  const soldSource = isSoldCompsDisabled()
+    ? { comps: [] }
+    : allowApify && hasSoldCompsProvider()
+      ? await searchSoldListings(metadata)
+      : {
+          comps: await searchEbaySoldListings({
+            metadata,
+            frontImagePath,
+            backImagePath,
+            imageUrl,
+            matchedListings: liveActive,
+          }),
+        };
   return {
     sold: dedupeComps([...(Array.isArray(soldSource.comps) ? soldSource.comps : []), ...manual]),
     active: liveActive,

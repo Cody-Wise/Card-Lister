@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readJson, sendJson, notFound } from "./lib/http.js";
@@ -23,7 +24,7 @@ import {
   describeBatchProcessingState,
   inferMetadataFromTitle,
 } from "./jobs/pipeline.js";
-import { getLiveCardComps } from "./services/comps.js";
+import { getLiveCardComps, isSoldCompsDisabled } from "./services/comps.js";
 import {
   getBestOffersForListing,
   extractItemIdFromListingUrl,
@@ -101,7 +102,26 @@ async function serveStatic(req, res, pathname) {
             : ext === ".png"
               ? "image/png"
               : "application/octet-stream";
-    res.writeHead(200, { "Content-Type": contentType });
+    // No cache headers were sent here at all, which left browsers free to
+    // apply their own heuristic caching to app.js/index.html/styles.css. The
+    // practical effect (hit live 2026-07-26): a frontend change was deployed
+    // and verified correct on the server, but an already-open session kept
+    // running the OLD app.js and the feature looked broken. This app ships
+    // its assets unversioned (no content hash in the filename), so the only
+    // safe policy is revalidate-every-time. ETag lets the browser skip the
+    // body when nothing actually changed, so this costs a 304 round trip
+    // rather than a full re-download.
+    const etag = `W/"${body.length}-${createHash("sha1").update(body).digest("hex").slice(0, 16)}"`;
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { ETag: etag, "Cache-Control": "no-cache" });
+      res.end();
+      return true;
+    }
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+      ETag: etag,
+    });
     res.end(body);
     return true;
   } catch {
@@ -1394,7 +1414,7 @@ async function drainExternalRepriceQueue() {
 }
 
 function scheduleExternalRepriceHydration(cardId, titleHint = "", imageUrl = "") {
-  if (!hasApifyConfig() || !cardId) return;
+  if (isSoldCompsDisabled() || !hasApifyConfig() || !cardId) return;
   if (externalRepriceQueuedIds.has(cardId)) return;
   externalRepriceQueuedIds.add(cardId);
   externalRepriceQueue.push({ cardId, titleHint, imageUrl });
@@ -1493,7 +1513,7 @@ async function drainOfferExternalRepriceQueue() {
 }
 
 function scheduleOfferExternalRepriceHydration({ listingId, sku, titleHint = "", imageUrl = "" } = {}) {
-  if (!hasApifyConfig()) return;
+  if (isSoldCompsDisabled() || !hasApifyConfig()) return;
   const key = offerHydrationKey({ listingId, sku });
   if (!key || offerExternalRepriceQueuedKeys.has(key)) return;
   offerExternalRepriceQueuedKeys.add(key);
@@ -2235,6 +2255,12 @@ function inferGradingCompany(value = "") {
 
 function buildReviewPatch(body = {}, existingCard = {}) {
   const rookieMode = normalizeRookieMode(body, existingCard);
+  const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+  // "Cleared by the user" and "not sent by the client" are different
+  // intentions and must not collapse into the same null. See the printRun/
+  // serialNumber note at the end of the returned object.
+  const printRunProvided = has("printRun") || has("printRunValue") || has("printRunHint");
+  const serialProvided = has("serialNumber") || has("candidateSerialNumber");
   const parsedPrintRun = parsePrintRunInput(
     body.printRun ?? body.printRunValue ?? body.printRunHint ?? "",
   );
@@ -2299,11 +2325,19 @@ function buildReviewPatch(body = {}, existingCard = {}) {
       normalizeText(body.compMatchMode ?? existingCard.compMatchMode) === "strict"
         ? "strict"
         : "auto",
-    serialNumber:
-      explicitSerial && !parsedPrintRun.serialNumber
-        ? explicitSerial
-        : parsedPrintRun.serialNumber || explicitSerial || null,
-    printRun: parsedPrintRun.printRun ?? existingCard.printRun ?? null,
+    // A CLEARED field must be distinguishable from an ABSENT one. printRun
+    // used to read `parsedPrintRun.printRun ?? existingCard.printRun`, so
+    // emptying the box parsed to null and then fell straight back to the
+    // existing value — the field was impossible to clear, and the stale run
+    // kept reappearing in the title/description/specifics (reported live on
+    // a 1973 Topps Willie Mays #1). Only fall back to what's already stored
+    // when the client didn't send the key at all.
+    serialNumber: serialProvided
+      ? parsedPrintRun.serialNumber || explicitSerial || null
+      : existingCard.serialNumber ?? null,
+    printRun: printRunProvided
+      ? parsedPrintRun.printRun ?? null
+      : existingCard.printRun ?? null,
   };
 }
 
@@ -3911,7 +3945,12 @@ export async function handler(req, res) {
 
   if (req.method === "POST" && pathname === "/api/ebay/listings/reprice") {
     const body = await readJson(req);
-    if (!hasApifyConfig()) {
+    // Used to hard-fail without APIFY_TOKEN. That's wrong now that sold
+    // comps are off by default (see comps.js): this route still works
+    // without them, pricing off ACTIVE listings instead, so refusing here
+    // would break the manual reprice button for no reason. Only reject when
+    // there's genuinely no pricing source at all.
+    if (!hasApifyConfig() && isSoldCompsDisabled() === false) {
       return sendJson(res, 400, { error: "APIFY_TOKEN is not configured." });
     }
 
@@ -4484,6 +4523,56 @@ export async function handler(req, res) {
       card: reviewedCard,
       patch: reviewPatch,
     });
+  }
+
+  // Regenerates the eBay title/description/specifics from the card's CURRENT
+  // stored fields — nothing else. Distinct from /review ("save and
+  // reprocess"), which re-runs the whole pipeline: OCR/vision, identity
+  // matching, and comp lookups. That full path takes minutes and spends real
+  // money, which is far too heavy when all that changed is a print run or a
+  // condition and the copy just needs to catch up. Everything the listing
+  // copy is built from already lives on the card, so this needs no external
+  // calls at all.
+  if (
+    req.method === "POST" &&
+    pathname.startsWith("/api/card-items/") &&
+    pathname.endsWith("/regenerate-listing")
+  ) {
+    const id = pathname.split("/")[3];
+    // Deliberately NOT swallowing parse errors. This used to be
+    // `.catch(() => ({}))`, which meant a body the server couldn't read
+    // (e.g. a client that forgot to JSON.stringify) silently degraded to
+    // "no edits" — the rewrite still ran, but against the OLD stored
+    // values, so the user's changes appeared to vanish with no error shown.
+    let body;
+    try {
+      body = await readJson(req);
+    } catch (error) {
+      return sendJson(res, 400, {
+        error: `Could not read the request body as JSON: ${error.message}`,
+      });
+    }
+    // Applying pending field edits here means one action instead of
+    // save-then-regenerate.
+    const patch = body && Object.keys(body).length ? body : null;
+    const updated = await withState(async (state) => {
+      const card = state.cardItems.find((item) => item.id === id);
+      if (!card) return null;
+      if (patch) {
+        Object.assign(card, buildReviewPatch(patch, card));
+      }
+      card.ebayTitle = buildEBayTitleForCard(card);
+      card.ebayDescription = await buildEBayDescriptionForCard(card, { force: true });
+      card.ebaySpecifics = buildItemSpecificsForCard(card);
+      card.updatedAt = nowIso();
+      createAuditEvent(state, "cardItem", id, "listing_regenerated", {
+        appliedPatch: Boolean(patch),
+      });
+      const offerEntries = (state.offers || []).filter((entry) => entry.cardItemId === id);
+      return cleanCard(card, offerEntries);
+    });
+    if (!updated) return notFound(res, "Card item not found");
+    return sendJson(res, 200, { card: updated });
   }
 
   if (

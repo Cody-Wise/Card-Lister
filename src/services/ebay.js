@@ -1044,9 +1044,20 @@ async function buildEBayDescription(card) {
     Boolean(gradingCompany || certificationNumber || (grade && !isRawGradeValue(grade)));
   const sport = inferSport(setName, card);
   const brand = inferBrand(setName);
+  // For a RAW card, candidateGrade holds the condition the reviewer actually
+  // picked ("Near Mint or Better" / "Excellent" / "Very Good" / "Poor", or
+  // the TCG equivalents). This used to be hardcoded to "Raw / Near
+  // Mint-Mint" for every ungraded card, so a genuinely worn card was
+  // described as near mint no matter what the reviewer selected — the same
+  // class of bug already fixed for the eBay condition DESCRIPTOR
+  // (RAW_CONDITION_DESCRIPTOR_VALUE_IDS), which meant the structured field
+  // and the human-readable copy disagreed with each other on the same
+  // listing. Falls back to the old text only when nothing was selected.
+  const rawConditionLabel =
+    grade && isRawGradeValue(grade) ? `Raw / ${grade}` : "Raw / Near Mint-Mint";
   const condition = isGraded
     ? [gradingCompany, grade].filter(Boolean).join(" ") || grade || "Graded"
-    : "Raw / Near Mint-Mint";
+    : rawConditionLabel;
   const price = card.recommendedPrice;
   const notes = card.notes;
   const yearStr = year ? String(year) : null;

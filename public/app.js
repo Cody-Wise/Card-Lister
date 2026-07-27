@@ -48,6 +48,7 @@ const reviewCertificationNumber = document.getElementById("reviewCertificationNu
 const reviewNotes = document.getElementById("reviewNotes");
 const saveReviewButton = document.getElementById("saveReviewButton");
 const saveReviewAndProcessButton = document.getElementById("saveReviewAndProcessButton");
+const regenerateListingButton = document.getElementById("regenerateListingButton");
 const approveReviewButton = document.getElementById("approveReviewButton");
 const reviewMessage = document.getElementById("reviewMessage");
 const generateReviewDescriptionButton = document.getElementById("generateReviewDescriptionButton");
@@ -728,6 +729,14 @@ async function loadReviewCard(cardId = reviewCardSelect.value) {
   // character-match an option's value, which silently left the dropdown on
   // its default/first option instead of the real detected grade.
   reviewGrade.value = card.gradeDropdownValue || card.candidateGrade || "";
+  // A card with no stored grade (the norm — OCR only detects a grade on
+  // slabs) leaves the select with no matching option, so selectedIndex
+  // goes to -1 and .value reads "". The box LOOKS like it's showing the
+  // first condition, but saving sends an empty grade, which persists as
+  // null — so the condition silently never sticks and the description has
+  // nothing to describe. Fall back to a real, selectable option so the
+  // control always reflects what will actually be saved.
+  if (reviewGrade.selectedIndex === -1) applyConditionModeToGradeSelect();
   ebayListingPrice.value = card.recommendedPrice ?? "";
   ebayCategoryId.value = card.ebayCategoryId || "";
   repriceMinPriceInput.value = card.repriceMinPrice ?? "";
@@ -3006,6 +3015,40 @@ saveReviewButton.addEventListener("click", async () => {
 });
 saveReviewAndProcessButton.addEventListener("click", async () => {
   try { await saveReview({ reprocess: true }); } catch (e) { reviewMessage.textContent = e.message; }
+});
+// Middle ground between "Save changes" (leaves the existing copy alone) and
+// "Save & reprocess" (re-runs OCR/vision and comp lookups, taking minutes
+// and spending real money). Editing a print run, condition, or parallel
+// usually just means the listing copy is stale — this rewrites the title,
+// description, and item specifics from the current field values, nothing
+// else. The on-screen edits ride along so it's one action, not save-then-
+// regenerate.
+regenerateListingButton.addEventListener("click", async () => {
+  const cardId = reviewCardSelect.value;
+  if (!cardId) { reviewMessage.textContent = "Select a card first."; return; }
+  const previousLabel = regenerateListingButton.textContent;
+  regenerateListingButton.disabled = true;
+  regenerateListingButton.textContent = "Rewriting...";
+  reviewMessage.textContent = "Rewriting the listing from the current values...";
+  try {
+    // MUST be stringified: api() hands options straight to fetch, so a raw
+    // object body serializes to "[object Object]", the server fails to
+    // parse it, and the route silently falls back to "no patch" — the
+    // rewrite then runs against the OLD stored values and the edits appear
+    // not to save at all.
+    await api(`/api/card-items/${cardId}/regenerate-listing`, {
+      method: "POST",
+      body: JSON.stringify(buildReviewPayload()),
+    });
+    reviewMessage.textContent = `Rewrote the listing for ${cardId}`;
+    await loadReviewCard(cardId);
+    await refresh();
+  } catch (e) {
+    reviewMessage.textContent = e.message;
+  } finally {
+    regenerateListingButton.disabled = false;
+    regenerateListingButton.textContent = previousLabel;
+  }
 });
 approveReviewButton.addEventListener("click", async () => {
   try {

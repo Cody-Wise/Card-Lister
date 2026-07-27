@@ -5,6 +5,7 @@ import {
   stripEmptySpecifics,
   mapCondition,
   buildEBayTitleForCard,
+  buildEBayDescriptionForCard,
   resolveCategoryIdForCard,
 } from "../src/services/ebay.js";
 
@@ -275,4 +276,67 @@ test("buildItemSpecificsForCard falls back to brand for Game when both title/set
     // No candidateSetName, no recognized keyword anywhere.
   });
   assert.deepEqual(specifics.Game, ["Some Obscure TCG Brand"]);
+});
+
+// The description used to hardcode "Raw / Near Mint-Mint" for EVERY ungraded
+// card, so the reviewer's condition selection never reached the listing copy
+// — a genuinely worn card was described as near mint. Same class of bug as
+// the condition-descriptor one fixed earlier, and it meant the structured
+// eBay field and the human-readable copy contradicted each other on the same
+// listing.
+test("the description reflects the reviewer's selected raw condition", async () => {
+  const base = {
+    candidatePlayer: "Willie Mays",
+    candidateYear: 2013,
+    candidateSetName: "Topps Baseball",
+    candidateCardNumber: "305",
+    candidateCondition: "raw",
+  };
+  const conditionLine = async (grade) => {
+    const description = await buildEBayDescriptionForCard({ ...base, candidateGrade: grade }, { force: true });
+    return (description.match(/Condition: [^\n]*/) || [""])[0];
+  };
+  assert.equal(await conditionLine("Poor"), "Condition: Raw / Poor");
+  assert.equal(await conditionLine("Very Good"), "Condition: Raw / Very Good");
+  assert.equal(await conditionLine("Excellent"), "Condition: Raw / Excellent");
+  assert.equal(await conditionLine("Near Mint or Better"), "Condition: Raw / Near Mint or Better");
+});
+
+test("a graded card still describes grader + grade, not the raw wording", async () => {
+  const description = await buildEBayDescriptionForCard(
+    {
+      candidatePlayer: "Willie Mays",
+      candidateYear: 2013,
+      candidateSetName: "Topps Baseball",
+      candidateCondition: "graded",
+      gradingCompany: "PSA",
+      candidateGrade: "10",
+    },
+    { force: true },
+  );
+  assert.match(description, /Condition: PSA 10/);
+  assert.doesNotMatch(description, /Raw \//);
+});
+
+test("with no condition selected the description falls back to the prior wording", async () => {
+  const description = await buildEBayDescriptionForCard(
+    { candidatePlayer: "Willie Mays", candidateYear: 2013, candidateSetName: "Topps Baseball", candidateCondition: "raw" },
+    { force: true },
+  );
+  assert.match(description, /Condition: Raw \/ Near Mint-Mint/);
+});
+
+test("print run and serial reach the description copy", async () => {
+  const description = await buildEBayDescriptionForCard(
+    {
+      candidatePlayer: "Willie Mays",
+      candidateYear: 2013,
+      candidateSetName: "Topps Baseball",
+      printRun: 25,
+      serialNumber: "07/25",
+    },
+    { force: true },
+  );
+  assert.match(description, /Print Run: 25/);
+  assert.match(description, /Serial Numbered: 07\/25/);
 });

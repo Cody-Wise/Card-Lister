@@ -1,6 +1,7 @@
 import { extractCardMetadata } from "../services/ocr.js";
 import { matchCardIdentity } from "../services/matching.js";
 import { getLiveCardComps, searchSoldListings, hasSoldCompsProvider } from "../services/comps.js";
+import { applyManualPriceAnchor } from "../services/active-listing-pricing.js";
 import { buildApifyLookupKey } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
 import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
@@ -1020,7 +1021,20 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
     (match.canonicalCard ? (metadataConfidence + match.confidence) / 2 : metadataConfidence).toFixed(2),
   );
   cardItem.canonicalCardId = match.canonicalCard?.id || null;
-  cardItem.recommendedPrice = pricing.recommendedPrice;
+  // The scanner's filename price is a HUMAN read and outranks anything the
+  // app infers right now — sold comps are gone (eBay sign-in wall), so the
+  // computed figure comes from other sellers' ASKS. Anchor to the human
+  // number, but let a genuinely hot market pull the price UP (capped at
+  // MANUAL_ANCHOR_MAX_MULTIPLE) so a card that popped off after it was
+  // scanned isn't stuck at a stale valuation.
+  const anchoredPrice = applyManualPriceAnchor(
+    pricing.recommendedPrice,
+    cardItem.manualPriceCheck,
+  );
+  cardItem.recommendedPrice = anchoredPrice.price ?? pricing.recommendedPrice;
+  cardItem.priceAnchorBasis = anchoredPrice.basis;
+  cardItem.priceAnchorReason = anchoredPrice.reason;
+  cardItem.marketPriceBeforeAnchor = anchoredPrice.marketPrice ?? pricing.recommendedPrice ?? null;
   cardItem.currency = "USD";
   cardItem.pricingStrategy = pricing.strategy;
   cardItem.pricingConfidence = pricing.confidence;
