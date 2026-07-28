@@ -3731,6 +3731,21 @@ const presaleAnnouncements = document.getElementById("presaleAnnouncements");
 const presaleDays = document.getElementById("presaleDays");
 const presaleGapDays = document.getElementById("presaleGapDays");
 
+// Every release carries a real sport now (the calendar reads it from the
+// source's own taxonomy rather than guessing), so the label is never blank.
+const PRESALE_SPORT_LABELS = {
+  baseball: "Baseball", basketball: "Basketball", football: "Football",
+  hockey: "Hockey", soccer: "Soccer", racing: "Racing", golf: "Golf",
+  mma: "MMA", boxing: "Boxing", wrestling: "Wrestling", tennis: "Tennis",
+  rugby: "Rugby", multi: "Multi-Sport", non_sport: "Non-Sport",
+  other: "Unspecified",
+};
+
+function presaleSportLabel(sport) {
+  const key = String(sport || "").toLowerCase();
+  return PRESALE_SPORT_LABELS[key] || (key ? key.replace(/_/g, " ") : "Unspecified");
+}
+
 function presaleDateLabel(value) {
   if (!value) return "TBD";
   const d = new Date(value);
@@ -3779,7 +3794,11 @@ async function loadPresaleIntel() {
     const srcText = (data.sources || [])
       .map((r) => `${salesEscape(r.source)} (${r.rows})`)
       .join(" · ");
+    const sportText = (data.bySport || [])
+      .map((r) => `${presaleSportLabel(r.sport)} ${r.upcoming}`)
+      .join(" · ");
     presaleMeta.innerHTML =
+      (sportText ? `By sport: ${sportText}<br />` : "") +
       `Sources: ${srcText || "none"}` +
       (stats.calendar_updated_at
         ? ` · calendar last refreshed ${new Date(stats.calendar_updated_at).toLocaleString()}`
@@ -3813,7 +3832,7 @@ async function loadPresaleIntel() {
                ? ` · <a href="${salesEscape(r.url)}" target="_blank" rel="noreferrer">link</a>`
                : "";
              return `<div><strong>${salesEscape(r.canonical_name || r.subject || "Unidentified product")}</strong>
-               <span class="muted">${r.presale_open_at ? `presale ${presaleDateLabel(r.presale_open_at)}` : ""}
+               <span class="muted">${presaleSportLabel(r.sport)}${r.presale_open_at ? ` · presale ${presaleDateLabel(r.presale_open_at)}` : ""}
                ${r.street_date ? ` · street ${presaleDateLabel(r.street_date)}` : ""}${price}${link}
                ${r.from_addr ? ` · from ${salesEscape(r.from_addr)}` : ""}</span></div>`;
            })
@@ -3825,33 +3844,54 @@ async function loadPresaleIntel() {
     if (!rows.length) {
       presaleResults.innerHTML = `<div class="empty-state">No releases in the next ${data.horizonDays} days.</div>`;
     } else {
-      // Group by date so the calendar reads like a calendar.
-      const byDate = new Map();
+      // Grouped by sport first, then by date within each sport.
+      const bySport = new Map();
       for (const r of rows) {
-        const key = String(r.release_date).slice(0, 10);
-        if (!byDate.has(key)) byDate.set(key, []);
-        byDate.get(key).push(r);
+        const sport = String(r.sport || "other").toLowerCase();
+        if (!bySport.has(sport)) bySport.set(sport, []);
+        bySport.get(sport).push(r);
       }
-      presaleResults.innerHTML = [...byDate.entries()]
-        .map(
-          ([day, items]) => `
-        <div class="listing-card">
-          <div class="listing-card-header">
-            <div>
-              <div class="listing-card-title">${presaleDateLabel(day)}</div>
-              <div class="listing-card-subtitle">${items.length} release${items.length === 1 ? "" : "s"}</div>
-            </div>
-          </div>
-          <div class="card-panel-body">
-            ${items
-              .map(
-                (r) =>
-                  `<div>${salesEscape(r.canonical_name || "Unnamed")} <span class="muted">· ${salesEscape(r.source)}${r.sport && r.sport !== "other" ? ` · ${salesEscape(r.sport)}` : ""}</span></div>`,
-              )
-              .join("")}
-          </div>
-        </div>`,
-        )
+      const ordered = [...bySport.entries()].sort((a, b) => {
+        if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+        return presaleSportLabel(a[0]).localeCompare(presaleSportLabel(b[0]));
+      });
+
+      presaleResults.innerHTML = ordered
+        .map(([sport, items]) => {
+          const byDate = new Map();
+          for (const r of items) {
+            const day = String(r.release_date).slice(0, 10);
+            if (!byDate.has(day)) byDate.set(day, []);
+            byDate.get(day).push(r);
+          }
+          const dates = [...byDate.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(
+              ([day, dayItems]) => `
+              <div class="listing-card">
+                <div class="listing-card-header">
+                  <div>
+                    <div class="listing-card-title">${presaleDateLabel(day)}</div>
+                    <div class="listing-card-subtitle">${presaleSportLabel(sport)} · ${dayItems.length} release${dayItems.length === 1 ? "" : "s"}</div>
+                  </div>
+                </div>
+                <div class="card-panel-body">
+                  ${dayItems
+                    .map(
+                      (r) =>
+                        `<div>${salesEscape(r.canonical_name || "Unnamed")}
+                          <span class="muted">· ${presaleSportLabel(r.sport)} · ${salesEscape(r.source)}</span></div>`,
+                    )
+                    .join("")}
+                </div>
+              </div>`,
+            )
+            .join("");
+          return `<section class="card-panel">
+              <div class="card-panel-summary static"><span>${presaleSportLabel(sport)} — ${items.length} release${items.length === 1 ? "" : "s"}</span></div>
+              <div class="card-panel-body">${dates}</div>
+            </section>`;
+        })
         .join("");
     }
     presaleStatus.textContent = `${rows.length} release${rows.length === 1 ? "" : "s"} in the next ${data.horizonDays} days.`;

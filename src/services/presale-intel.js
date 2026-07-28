@@ -68,6 +68,7 @@ const DISAGREEMENT_SQL = `
 const ANNOUNCEMENTS_SQL = `
   SELECT ra.id,
          pk.canonical_name,
+         pk.sport,
          ra.presale_open_at,
          ra.street_date,
          ra.price_cents,
@@ -81,6 +82,15 @@ const ANNOUNCEMENTS_SQL = `
     LEFT JOIN email_ingest  ei ON ei.id = ra.email_id
    ORDER BY ra.created_at DESC
    LIMIT $1::int`;
+
+const BY_SPORT_SQL = `
+  SELECT pk.sport, count(*) AS upcoming
+    FROM releases r
+    JOIN product_keys pk ON pk.id = r.product_key_id
+   WHERE r.release_date >= current_date
+     AND r.release_date <= current_date + $1::int
+   GROUP BY pk.sport
+   ORDER BY count(*) DESC, pk.sport`;
 
 const STATS_SQL = `
   SELECT
@@ -113,12 +123,13 @@ export async function getPresaleIntel({ days = 60, gapDays = 7, announcementLimi
   const limit = Math.max(1, Math.min(200, Number.parseInt(announcementLimit, 10) || 25));
 
   try {
-    const [upcoming, disagreements, announcements, stats, sources] = await Promise.all([
+    const [upcoming, disagreements, announcements, stats, sources, bySport] = await Promise.all([
       client.query(UPCOMING_SQL, [horizon]),
       client.query(DISAGREEMENT_SQL, [gap]),
       client.query(ANNOUNCEMENTS_SQL, [limit]),
       client.query(STATS_SQL),
       client.query(SOURCES_SQL),
+      client.query(BY_SPORT_SQL, [horizon]),
     ]);
     return {
       configured: true,
@@ -127,6 +138,7 @@ export async function getPresaleIntel({ days = 60, gapDays = 7, announcementLimi
       disagreements: disagreements.rows,
       announcements: announcements.rows,
       sources: sources.rows,
+      bySport: bySport.rows,
       stats: stats.rows[0] || {},
     };
   } catch (error) {
