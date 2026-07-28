@@ -43,6 +43,7 @@ const UPCOMING_SQL = `
          pk.year, pk.manufacturer, pk.brand, pk.sport,
          r.release_date,
          r.source,
+         r.url,
          r.confidence
     FROM releases r
     JOIN product_keys pk ON pk.id = r.product_key_id

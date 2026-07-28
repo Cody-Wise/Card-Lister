@@ -3741,6 +3741,27 @@ const PRESALE_SPORT_LABELS = {
   other: "Unspecified",
 };
 
+function presaleSafeUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
+  } catch {
+    return null; // relative or malformed — not linkable
+  }
+}
+
+// Sports Card Radio's calendar is a bare JSON array with no product pages, so
+// its rows have no URL and render as plain text rather than a dead link.
+function presaleSourceMarkup(source, url) {
+  const href = presaleSafeUrl(url);
+  const label = salesEscape(source || "unknown");
+  return href
+    ? `<a href="${salesEscape(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+    : label;
+}
+
 function presaleSportLabel(sport) {
   const key = String(sport || "").toLowerCase();
   return PRESALE_SPORT_LABELS[key] || (key ? key.replace(/_/g, " ") : "Unspecified");
@@ -3880,7 +3901,7 @@ async function loadPresaleIntel() {
                     .map(
                       (r) =>
                         `<div>${salesEscape(r.canonical_name || "Unnamed")}
-                          <span class="muted">· ${presaleSportLabel(r.sport)} · ${salesEscape(r.source)}</span></div>`,
+                          <span class="muted">· ${presaleSportLabel(r.sport)} · ${presaleSourceMarkup(r.source, r.url)}</span></div>`,
                     )
                     .join("")}
                 </div>
