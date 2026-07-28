@@ -70,6 +70,7 @@ import { handleGradingApiRoutes } from "./routes/grading-routes.js";
 import { handleDaCardWorldApiRoutes } from "./routes/dacardworld-routes.js";
 import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
 import { handleListingImportApiRoutes } from "./routes/listing-import-routes.js";
+import { handleNonCardApiRoutes } from "./routes/non-card-routes.js";
 import {
   isAuthenticated,
   isAllowedEmail,
@@ -2666,6 +2667,11 @@ export async function handler(req, res) {
 
   if (pathname.startsWith("/api/listings/")) {
     const handled = await handleListingImportApiRoutes(req, res, { pathname });
+    if (handled) return;
+  }
+
+  if (pathname.startsWith("/api/non-card-listings")) {
+    const handled = await handleNonCardApiRoutes(req, res, { pathname, url });
     if (handled) return;
   }
 

@@ -48,6 +48,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h6"/><path d="M7 16h4"/></svg>
             Listings
           </button>
+          <button class="nav-item" data-tab="other-items">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23Z"/></svg>
+            Other Items
+          </button>
           <button class="nav-item" data-tab="published">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
             Published
@@ -345,6 +349,49 @@
           </section>
           <div id="listingsSummary" class="listings-summary"></div>
           <div id="listingsResults" class="list"></div>
+        </div>
+
+        <div class="tab-content" id="tab-other-items">
+          <header class="section-header">
+            <h2>Other Items</h2>
+          </header>
+          <section class="card-panel">
+            <div class="card-panel-summary static"><span>Apparel, jerseys and everything else in your eBay store that isn't a trading card</span></div>
+            <div class="card-panel-body">
+              <div class="form-actions">
+                <button class="btn btn-outline" id="otherItemsLoadButton">Load other items</button>
+                <button class="btn btn-outline" id="otherItemsRefreshButton">Force refresh from eBay</button>
+                <span class="msg muted" id="otherItemsStatus"></span>
+              </div>
+              <div class="muted" id="otherItemsMeta"></div>
+              <div class="muted">Classified by eBay category, not by title — jersey <em>patch cards</em> stay with the cards.</div>
+            </div>
+          </section>
+
+          <section class="card-panel">
+            <div class="card-panel-summary static"><span>Bulk reprice</span></div>
+            <div class="card-panel-body">
+              <div class="form-row">
+                <label>Apply to <select id="otherItemsScope"><option value="all">All other items</option><option value="selected">Selected only</option></select></label>
+                <label>Category <select id="otherItemsCategory"><option value="">All categories</option></select></label>
+                <label>Change <select id="otherItemsAdjustType"><option value="percent">By percent</option><option value="amount">By dollar amount</option><option value="fixed">Set to fixed price</option></select></label>
+                <label>Value (negative = decrease) <input id="otherItemsAdjustValue" type="number" step="0.5" placeholder="-10" /></label>
+              </div>
+              <div class="form-row">
+                <label>Floor price (optional) <input id="otherItemsMinPrice" type="number" step="0.01" min="0" placeholder="0.99" /></label>
+                <label>Ceiling price (optional) <input id="otherItemsMaxPrice" type="number" step="0.01" min="0" placeholder="none" /></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-outline" id="otherItemsPreviewButton">Preview</button>
+                <button class="btn" id="otherItemsApplyButton" style="display:none">Apply to eBay</button>
+                <span class="msg muted" id="otherItemsRepriceStatus"></span>
+              </div>
+              <div class="muted" id="otherItemsPreview"></div>
+            </div>
+          </section>
+
+          <div id="otherItemsSummary" class="listings-summary"></div>
+          <div id="otherItemsResults" class="list"></div>
         </div>
 
         <div class="tab-content" id="tab-published">

@@ -1815,6 +1815,7 @@ function normalizeActiveListing(offer = {}) {
     ).toUpperCase(),
     listingId,
     listingUrl: listingUrl || (listingId ? `https://www.ebay.com/itm/${listingId}` : null),
+    categoryId: offer?.categoryId || offer?.primaryCategory?.categoryId || null,
     title,
     imageUrl: imageUrls[0] || null,
     imageUrls,
@@ -1871,6 +1872,9 @@ function mergeActiveListingRecords(primary = {}, secondary = {}) {
     imageUrls,
     listingUrl: primary.listingUrl || secondary.listingUrl || null,
     listingId: primary.listingId || secondary.listingId || null,
+    // Only the Trading API leg carries a category, so never let a spread from
+    // the other (categoryId-less) leg blank it out.
+    categoryId: primary.categoryId || secondary.categoryId || null,
     sku: primary.sku || secondary.sku || null,
     offerId: primary.offerId || secondary.offerId || null,
     marketplaceId: primary.marketplaceId || secondary.marketplaceId || null,
@@ -1902,6 +1906,18 @@ function isEbayAuthFailure(error) {
     message.includes("authorization") ||
     message.includes("expired")
   );
+}
+
+// GetMyeBaySelling does NOT return <PrimaryCategory> for ActiveList items even
+// at <DetailLevel>ReturnAll</DetailLevel> (verified live: 0 of 243 items carried
+// it). The category is only available embedded in the item's view URL as a query
+// param — and because the response is XML the "&" is escaped to "&amp;", so a
+// naive /[?&]category=/ matches nothing at all. Match bare "category=" instead.
+function extractCategoryIdFromItemXml(itemXml = "") {
+  const direct = xmlTagValue(itemXml, "CategoryID");
+  if (direct && /^\d+$/.test(String(direct).trim())) return String(direct).trim();
+  const match = String(itemXml || "").match(/category=(\d+)/i);
+  return match ? match[1] : null;
 }
 
 async function fetchTradingActiveListings({ pageSize = 200, maxPages = 10 } = {}) {
@@ -1940,6 +1956,7 @@ async function fetchTradingActiveListings({ pageSize = 200, maxPages = 10 } = {}
         status: "PUBLISHED",
         listingId,
         listingUrl,
+        categoryId: extractCategoryIdFromItemXml(itemXml),
         title: xmlTagValue(itemXml, "Title"),
         imageUrl: xmlTagValue(itemXml, "PictureURL") || xmlTagValue(itemXml, "GalleryURL") || null,
         imageUrls: [xmlTagValue(itemXml, "PictureURL") || xmlTagValue(itemXml, "GalleryURL") || null]

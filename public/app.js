@@ -2355,6 +2355,9 @@ document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
     if (btn.dataset.tab === "dacardworld" && !daCardWorldNewReleases?.innerHTML) {
       loadDaCardWorldSnapshot();
     }
+    if (btn.dataset.tab === "other-items" && otherItemsResults && !otherItemsResults.innerHTML) {
+      loadOtherItems();
+    }
     if (btn.dataset.tab === "best-offers" && bestOffersList && !bestOffersList.dataset.loaded) {
       bestOffersList.dataset.loaded = "1";
       loadBestOffers();
@@ -3712,6 +3715,276 @@ document.addEventListener("change", async (event) => {
     await api(`/api/card-items/${cardId}/comp-toggle`, { method: "POST", body: JSON.stringify({ compId: compKey }) });
     await loadReviewCard(cardId);
   } catch (e) { reviewMessage.textContent = e.message; }
+});
+
+/* ── Other Items (non-card store listings) ── */
+const otherItemsLoadButton = document.getElementById("otherItemsLoadButton");
+const otherItemsRefreshButton = document.getElementById("otherItemsRefreshButton");
+const otherItemsStatus = document.getElementById("otherItemsStatus");
+const otherItemsMeta = document.getElementById("otherItemsMeta");
+const otherItemsSummary = document.getElementById("otherItemsSummary");
+const otherItemsResults = document.getElementById("otherItemsResults");
+const otherItemsScope = document.getElementById("otherItemsScope");
+const otherItemsCategory = document.getElementById("otherItemsCategory");
+const otherItemsAdjustType = document.getElementById("otherItemsAdjustType");
+const otherItemsAdjustValue = document.getElementById("otherItemsAdjustValue");
+const otherItemsMinPrice = document.getElementById("otherItemsMinPrice");
+const otherItemsMaxPrice = document.getElementById("otherItemsMaxPrice");
+const otherItemsPreviewButton = document.getElementById("otherItemsPreviewButton");
+const otherItemsApplyButton = document.getElementById("otherItemsApplyButton");
+const otherItemsRepriceStatus = document.getElementById("otherItemsRepriceStatus");
+const otherItemsPreview = document.getElementById("otherItemsPreview");
+
+let otherItemsData = [];
+// The exact request body that produced the on-screen preview. Apply re-sends
+// it verbatim, so what reaches eBay is what was previewed even if the form is
+// edited between clicking Preview and Apply.
+let otherItemsPendingBody = null;
+let otherItemsPendingCount = 0;
+// Kept so the summary tiles can be re-rendered after an in-place price edit
+// without another eBay round-trip.
+let lastOtherItemsSummary = [];
+let lastOtherItemsCardCount = 0;
+
+function otherItemsSelectedIds() {
+  return [...document.querySelectorAll("input[data-other-item-id]:checked")].map((el) => el.dataset.otherItemId);
+}
+
+async function loadOtherItems({ force = false } = {}) {
+  if (!otherItemsResults) return;
+  otherItemsStatus.textContent = force ? "Refreshing from eBay..." : "Loading...";
+  otherItemsResults.innerHTML = `<div class="empty-state">Loading other items...</div>`;
+  try {
+    const data = await api(`/api/non-card-listings${force ? "?refresh=1" : ""}`);
+    otherItemsData = Array.isArray(data.listings) ? data.listings : [];
+    lastOtherItemsSummary = data.summary || [];
+    lastOtherItemsCardCount = data.cardCount || 0;
+    renderOtherItemsSummary(data);
+    renderOtherItemsCategories(data.summary || []);
+    renderOtherItems();
+    otherItemsStatus.textContent = `${otherItemsData.length} other item${otherItemsData.length === 1 ? "" : "s"} found.`;
+    const fetched = data.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : "unknown";
+    otherItemsMeta.textContent =
+      `${data.totalActive || 0} active listings scanned · ${data.cardCount || 0} cards excluded` +
+      (data.unclassifiedCount ? ` · ${data.unclassifiedCount} with no category (excluded)` : "") +
+      ` · ${data.cached ? "cached" : "fresh"} as of ${fetched}`;
+  } catch (error) {
+    otherItemsStatus.textContent = error.message;
+    otherItemsResults.innerHTML = `<div class="empty-state">${salesEscape(error.message)}</div>`;
+  }
+}
+
+function renderOtherItemsSummary(data) {
+  if (!otherItemsSummary) return;
+  const totalValue = otherItemsData.reduce((sum, row) => sum + (Number(row.currentPrice) || 0), 0);
+  otherItemsSummary.innerHTML = `
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Other items</span>
+      <strong>${otherItemsData.length}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Listed value</span>
+      <strong>${formatSalesMoney(totalValue)}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Categories</span>
+      <strong>${(data.summary || []).length}</strong>
+    </div>
+    <div class="listing-summary-card">
+      <span class="listing-summary-label">Cards excluded</span>
+      <strong>${data.cardCount || 0}</strong>
+    </div>`;
+}
+
+function renderOtherItemsCategories(summary) {
+  if (!otherItemsCategory) return;
+  const current = otherItemsCategory.value;
+  otherItemsCategory.innerHTML =
+    `<option value="">All categories</option>` +
+    summary
+      .map((row) => `<option value="${salesEscape(row.categoryId)}">${salesEscape(row.label)} (${row.count})</option>`)
+      .join("");
+  otherItemsCategory.value = current;
+}
+
+function renderOtherItems() {
+  if (!otherItemsResults) return;
+  if (!otherItemsData.length) {
+    otherItemsResults.innerHTML = `<div class="empty-state">No non-card listings found in your store.</div>`;
+    return;
+  }
+  otherItemsResults.innerHTML = otherItemsData
+    .map(
+      (row) => `
+    <div class="listing-card">
+      <div class="listing-card-header">
+        <div class="listing-card-media${row.imageUrl ? "" : " listing-card-media-empty"}">
+          ${row.imageUrl
+            ? `<img class="listing-card-thumb" src="${salesEscape(row.imageUrl)}" alt="${salesEscape(row.title || "Listing thumbnail")}" loading="lazy" referrerpolicy="no-referrer" />`
+            : `<span class="listing-card-thumb-fallback">No image</span>`}
+        </div>
+        <div>
+          <div class="listing-card-title">
+            <label><input type="checkbox" data-other-item-id="${salesEscape(row.listingId)}" /> ${salesEscape(row.title || "Untitled listing")}</label>
+          </div>
+          <div class="listing-card-subtitle">
+            ${salesEscape(row.categoryLabel || "Unknown category")}
+            ${row.sku ? ` · SKU ${salesEscape(row.sku)}` : ""}
+            ${Number.isFinite(row.watchCount) ? ` · ${row.watchCount} watching` : ""}
+            ${row.bestOfferEnabled ? " · Best Offer on" : ""}
+          </div>
+        </div>
+        <div class="listing-price-block">
+          <strong>${formatSalesMoney(row.currentPrice || 0)}</strong>
+          <span class="muted">${Number.isFinite(row.quantity) ? `${row.quantity} avail` : "Qty n/a"}</span>
+        </div>
+      </div>
+      <div class="form-actions">
+        <label>New price <input type="number" step="0.01" min="0" data-other-item-price="${salesEscape(row.listingId)}" placeholder="${Number(row.currentPrice || 0).toFixed(2)}" /></label>
+        <button class="btn btn-outline" data-other-item-save="${salesEscape(row.listingId)}">Update price</button>
+        ${row.listingUrl ? `<a class="btn btn-outline" href="${salesEscape(row.listingUrl)}" target="_blank" rel="noreferrer">View on eBay</a>` : ""}
+        <span class="msg muted" data-other-item-msg="${salesEscape(row.listingId)}"></span>
+      </div>
+    </div>`,
+    )
+    .join("");
+}
+
+function buildOtherItemsRepriceBody() {
+  const body = {
+    adjustmentType: otherItemsAdjustType?.value || "percent",
+    adjustmentValue: Number(otherItemsAdjustValue?.value),
+  };
+  if (!Number.isFinite(body.adjustmentValue)) throw new Error("Enter a value for the price change.");
+  if (otherItemsScope?.value === "selected") {
+    const ids = otherItemsSelectedIds();
+    if (!ids.length) throw new Error("Select at least one item, or switch the scope back to all.");
+    body.listingIds = ids;
+  }
+  if (otherItemsCategory?.value) body.categoryId = otherItemsCategory.value;
+  if (otherItemsMinPrice?.value) body.minPrice = Number(otherItemsMinPrice.value);
+  if (otherItemsMaxPrice?.value) body.maxPrice = Number(otherItemsMaxPrice.value);
+  return body;
+}
+
+function renderOtherItemsPlan(plan) {
+  const rows = plan.changes || [];
+  const lines = rows
+    .slice(0, 40)
+    .map(
+      (row) =>
+        `${salesEscape(row.title || row.listingId)} — ${formatSalesMoney(row.currentPrice)} → <strong>${formatSalesMoney(row.newPrice)}</strong> (${row.deltaPercent > 0 ? "+" : ""}${row.deltaPercent}%)${row.clamped ? " <em>clamped</em>" : ""}`,
+    )
+    .join("<br />");
+  const more = rows.length > 40 ? `<br />…and ${rows.length - 40} more` : "";
+  const skippedNote = (plan.skipped || []).length
+    ? `<br /><span class="muted">${plan.skipped.length} skipped (${[...new Set(plan.skipped.map((s) => s.reason))].join(", ")})</span>`
+    : "";
+  const rejectedNote = (plan.rejected || []).length
+    ? `<br /><span class="muted">${plan.rejected.length} ignored — not a non-card listing</span>`
+    : "";
+  otherItemsPreview.innerHTML = rows.length
+    ? `<strong>${rows.length} listing${rows.length === 1 ? "" : "s"} will change</strong> · ${formatSalesMoney(plan.totalCurrentValue)} → ${formatSalesMoney(plan.totalNewValue)}<br />${lines}${more}${skippedNote}${rejectedNote}`
+    : `<strong>Nothing to change.</strong>${skippedNote}${rejectedNote}`;
+  return rows.length;
+}
+
+otherItemsLoadButton?.addEventListener("click", () => loadOtherItems());
+otherItemsRefreshButton?.addEventListener("click", () => loadOtherItems({ force: true }));
+
+otherItemsPreviewButton?.addEventListener("click", async () => {
+  otherItemsApplyButton.style.display = "none";
+  otherItemsPendingBody = null;
+  try {
+    const body = buildOtherItemsRepriceBody();
+    otherItemsRepriceStatus.textContent = "Previewing...";
+    const plan = await api("/api/non-card-listings/preview", { method: "POST", body: JSON.stringify(body) });
+    otherItemsPendingCount = renderOtherItemsPlan(plan);
+    otherItemsRepriceStatus.textContent = otherItemsPendingCount
+      ? "Review the preview, then apply."
+      : "No changes to apply.";
+    if (otherItemsPendingCount) {
+      otherItemsPendingBody = body;
+      otherItemsApplyButton.style.display = "";
+    }
+  } catch (error) {
+    otherItemsRepriceStatus.textContent = error.message;
+    otherItemsPreview.textContent = "";
+  }
+});
+
+otherItemsApplyButton?.addEventListener("click", async () => {
+  if (!otherItemsPendingBody) return;
+  if (!window.confirm(`Push new prices to eBay for ${otherItemsPendingCount} listing(s)? This changes live listings.`)) return;
+  otherItemsApplyButton.disabled = true;
+  otherItemsRepriceStatus.textContent = "Applying to eBay...";
+  try {
+    const result = await api("/api/non-card-listings/reprice", {
+      method: "POST",
+      body: JSON.stringify(otherItemsPendingBody),
+    });
+    otherItemsRepriceStatus.textContent = `Updated ${result.updated}${result.failed ? `, ${result.failed} failed` : ""}.`;
+    const failures = (result.results || []).filter((row) => row.status === "failed");
+    otherItemsPreview.innerHTML = failures.length
+      ? failures.map((row) => `${salesEscape(row.title || row.listingId)}: ${salesEscape(row.error || "failed")}`).join("<br />")
+      : "";
+    otherItemsApplyButton.style.display = "none";
+    otherItemsPendingBody = null;
+    await loadOtherItems({ force: true });
+  } catch (error) {
+    otherItemsRepriceStatus.textContent = error.message;
+  } finally {
+    otherItemsApplyButton.disabled = false;
+  }
+});
+
+// Individual price edit — goes through the same server-side non-card
+// verification as the bulk path, just as a one-row explicit-price request.
+otherItemsResults?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-other-item-save]");
+  if (!button) return;
+  const listingId = button.dataset.otherItemSave;
+  const input = otherItemsResults.querySelector(`input[data-other-item-price="${CSS.escape(listingId)}"]`);
+  const msg = otherItemsResults.querySelector(`[data-other-item-msg="${CSS.escape(listingId)}"]`);
+  const price = Number(input?.value);
+  if (!Number.isFinite(price) || price <= 0) {
+    if (msg) msg.textContent = "Enter a price above 0.";
+    return;
+  }
+  button.disabled = true;
+  if (msg) msg.textContent = "Updating...";
+  try {
+    const result = await api("/api/non-card-listings/reprice", {
+      method: "POST",
+      body: JSON.stringify({ prices: [{ listingId, price }] }),
+    });
+    const row = (result.results || [])[0];
+    if (row?.status === "updated") {
+      if (msg) msg.textContent = `Updated to ${formatSalesMoney(row.newPrice)}.`;
+      // Patch the row in place instead of refetching: a full reload here would
+      // spend one GetMyeBaySelling call per individual edit, and that daily
+      // quota is this account's tightest constraint.
+      const local = otherItemsData.find((item) => item.listingId === listingId);
+      if (local) local.currentPrice = row.newPrice;
+      const priceEl = button.closest(".listing-card")?.querySelector(".listing-price-block strong");
+      if (priceEl) priceEl.textContent = formatSalesMoney(row.newPrice);
+      if (input) {
+        input.value = "";
+        input.placeholder = Number(row.newPrice).toFixed(2);
+      }
+      renderOtherItemsSummary({ summary: lastOtherItemsSummary, cardCount: lastOtherItemsCardCount });
+    } else if (row?.status === "failed") {
+      if (msg) msg.textContent = row.error || "Update failed.";
+    } else {
+      const skipped = (result.skipped || [])[0];
+      const rejected = (result.rejected || [])[0];
+      if (msg) msg.textContent = skipped ? `Skipped: ${skipped.reason}` : rejected ? "Not a non-card listing." : "No change applied.";
+    }
+  } catch (error) {
+    if (msg) msg.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 /* ── Close buttons ── */
