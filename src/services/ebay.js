@@ -74,6 +74,15 @@ export function computeBestOfferThresholds(price) {
   };
 }
 
+// eBay reports this as a plain error string, not a distinguishable code, so
+// match the message. Observed live 2026-07-28 on a bulk price drop:
+//   "The Best Offer Auto Accept Price must be less than the Buy It Now
+//    price.; Invalid AutoAccept price."
+export function isBestOfferThresholdConflict(error) {
+  const message = String(error?.message || error || "");
+  return /auto\s*accept price/i.test(message) || /minimum best offer/i.test(message);
+}
+
 function normalizeBestOfferTerms(bestOfferTerms = {}, price = null) {
   const thresholds = computeBestOfferThresholds(price);
   return {
@@ -1582,7 +1591,40 @@ async function reviseTradingListingPrice({
     <StartPrice>${xmlEscape(numericPrice.toFixed(2))}</StartPrice>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`;
-  await requestTradingEbay("ReviseInventoryStatus", xmlBody);
+  try {
+    await requestTradingEbay("ReviseInventoryStatus", xmlBody);
+  } catch (error) {
+    // Price and Best Offer thresholds are coupled, and this two-step path
+    // (price first, thresholds after) can only ever move them in one order.
+    // Dropping the price below the listing's EXISTING auto-accept — which was
+    // computed from the old, higher price — makes eBay reject the price change
+    // itself with "Best Offer Auto Accept Price must be less than the Buy It
+    // Now price". Raising the price has the mirror problem if thresholds went
+    // first, so there is no fixed order that works both ways.
+    //
+    // ReviseFixedPriceItem carries both in ONE call, and eBay validates the
+    // resulting state rather than an interim one, so direction stops mattering.
+    // Kept as a fallback rather than the default so the cheap, proven
+    // ReviseInventoryStatus path still handles the ordinary case.
+    if (!isBestOfferThresholdConflict(error)) throw error;
+    const combined = computeBestOfferThresholds(numericPrice);
+    if (!combined) throw error;
+    await requestTradingEbay("ReviseFixedPriceItem", `<?xml version="1.0" encoding="utf-8"?>
+<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Item>
+    <ItemID>${xmlEscape(listingId)}</ItemID>
+    <StartPrice currencyID="USD">${xmlEscape(numericPrice.toFixed(2))}</StartPrice>
+    <BestOfferDetails>
+      <BestOfferEnabled>true</BestOfferEnabled>
+    </BestOfferDetails>
+    <ListingDetails>
+      <BestOfferAutoAcceptPrice currencyID="USD">${xmlEscape(combined.autoAcceptPrice.toFixed(2))}</BestOfferAutoAcceptPrice>
+      <MinimumBestOfferPrice currencyID="USD">${xmlEscape(combined.autoDeclinePrice.toFixed(2))}</MinimumBestOfferPrice>
+    </ListingDetails>
+  </Item>
+</ReviseFixedPriceItemRequest>`);
+    return; // thresholds were set in the same call; skip the refresh below
+  }
 
   // ReviseInventoryStatus is a narrow, price/quantity-only call — it can't
   // touch Best Offer terms, so without this the auto-accept/decline

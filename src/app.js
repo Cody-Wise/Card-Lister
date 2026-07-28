@@ -71,6 +71,7 @@ import { handleDaCardWorldApiRoutes } from "./routes/dacardworld-routes.js";
 import { handleEbayOAuthRoutes } from "./routes/ebay-oauth-routes.js";
 import { handleListingImportApiRoutes } from "./routes/listing-import-routes.js";
 import { handleNonCardApiRoutes } from "./routes/non-card-routes.js";
+import { getPresaleIntel, hasPresaleIntelConfig } from "./services/presale-intel.js";
 import {
   isAuthenticated,
   isAllowedEmail,
@@ -2673,6 +2674,17 @@ export async function handler(req, res) {
   if (pathname.startsWith("/api/non-card-listings")) {
     const handled = await handleNonCardApiRoutes(req, res, { pathname, url });
     if (handled) return;
+  }
+
+  // Read-only view of the standalone presale-intelligence database. It is a
+  // separate service with its own lifecycle, so this never throws into the
+  // request — getPresaleIntel returns an {error} payload the tab renders.
+  if (req.method === "GET" && pathname === "/api/presale-intel") {
+    const data = await getPresaleIntel({
+      days: url.searchParams.get("days") || 60,
+      gapDays: url.searchParams.get("gapDays") || 7,
+    });
+    return sendJson(res, 200, { ...data, hasConfig: hasPresaleIntelConfig() });
   }
 
   if (req.method === "POST" && pathname === "/api/ebay/generate-description") {

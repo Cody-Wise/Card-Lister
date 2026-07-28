@@ -187,3 +187,36 @@ test("a clamp that lands exactly on the current price is skipped as unchanged", 
   assert.equal(plan.changes.length, 0);
   assert.equal(plan.skipped[0].reason, "unchanged");
 });
+
+// ── Best Offer threshold conflict detection ──
+// Regression guard for the live failure that blocked the first bulk reprice:
+// dropping a price below the listing's existing auto-accept threshold makes
+// eBay reject the price change itself.
+import { isBestOfferThresholdConflict } from "../src/services/ebay.js";
+
+test("recognizes the live auto-accept conflict message", () => {
+  const real = new Error(
+    "eBay ReviseInventoryStatus failed (200): The Best Offer Auto Accept Price " +
+    "must be less than the Buy It Now price.; Invalid AutoAccept price.",
+  );
+  assert.equal(isBestOfferThresholdConflict(real), true);
+});
+
+test("recognizes the minimum-best-offer variant", () => {
+  assert.equal(
+    isBestOfferThresholdConflict(new Error("Minimum Best Offer price is invalid")),
+    true,
+  );
+});
+
+test("does not misfire on unrelated eBay errors", () => {
+  for (const message of [
+    "eBay ReviseInventoryStatus failed (500): Internal error",
+    "The item specific Game is missing",
+    "Auth token is expired",
+    "",
+  ]) {
+    assert.equal(isBestOfferThresholdConflict(new Error(message)), false, message);
+  }
+  assert.equal(isBestOfferThresholdConflict(null), false);
+});

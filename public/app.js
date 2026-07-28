@@ -2355,6 +2355,9 @@ document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
     if (btn.dataset.tab === "dacardworld" && !daCardWorldNewReleases?.innerHTML) {
       loadDaCardWorldSnapshot();
     }
+    if (btn.dataset.tab === "presale-intel" && presaleResults && !presaleResults.innerHTML) {
+      loadPresaleIntel();
+    }
     if (btn.dataset.tab === "other-items" && otherItemsResults && !otherItemsResults.innerHTML) {
       loadOtherItems();
     }
@@ -3716,6 +3719,149 @@ document.addEventListener("change", async (event) => {
     await loadReviewCard(cardId);
   } catch (e) { reviewMessage.textContent = e.message; }
 });
+
+/* ── Presale Intel (read-only view of the standalone card-intel database) ── */
+const presaleLoadButton = document.getElementById("presaleLoadButton");
+const presaleStatus = document.getElementById("presaleStatus");
+const presaleMeta = document.getElementById("presaleMeta");
+const presaleSummary = document.getElementById("presaleSummary");
+const presaleResults = document.getElementById("presaleResults");
+const presaleDisagreements = document.getElementById("presaleDisagreements");
+const presaleAnnouncements = document.getElementById("presaleAnnouncements");
+const presaleDays = document.getElementById("presaleDays");
+const presaleGapDays = document.getElementById("presaleGapDays");
+
+function presaleDateLabel(value) {
+  if (!value) return "TBD";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value).slice(0, 10);
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+async function loadPresaleIntel() {
+  if (!presaleResults) return;
+  presaleStatus.textContent = "Loading...";
+  presaleResults.innerHTML = `<div class="empty-state">Loading release calendar...</div>`;
+  presaleDisagreements.innerHTML = "";
+  presaleAnnouncements.innerHTML = "";
+  try {
+    const params = new URLSearchParams();
+    params.set("days", presaleDays?.value || "60");
+    params.set("gapDays", presaleGapDays?.value || "7");
+    const data = await api(`/api/presale-intel?${params.toString()}`);
+
+    if (data.error) {
+      presaleStatus.textContent = data.error;
+      presaleSummary.innerHTML = "";
+      presaleResults.innerHTML = `<div class="empty-state">${salesEscape(data.error)}</div>`;
+      return;
+    }
+
+    const stats = data.stats || {};
+    presaleSummary.innerHTML = `
+      <div class="listing-summary-card">
+        <span class="listing-summary-label">Upcoming releases</span>
+        <strong>${stats.upcoming_total ?? 0}</strong>
+      </div>
+      <div class="listing-summary-card">
+        <span class="listing-summary-label">In next ${data.horizonDays}d</span>
+        <strong>${(data.upcoming || []).length}</strong>
+      </div>
+      <div class="listing-summary-card">
+        <span class="listing-summary-label">Presale announcements</span>
+        <strong>${stats.announcements_total ?? 0}</strong>
+      </div>
+      <div class="listing-summary-card">
+        <span class="listing-summary-label">Emails ingested</span>
+        <strong>${stats.emails_processed ?? 0}/${stats.emails_ingested ?? 0}</strong>
+      </div>`;
+
+    const srcText = (data.sources || [])
+      .map((r) => `${salesEscape(r.source)} (${r.rows})`)
+      .join(" · ");
+    presaleMeta.innerHTML =
+      `Sources: ${srcText || "none"}` +
+      (stats.calendar_updated_at
+        ? ` · calendar last refreshed ${new Date(stats.calendar_updated_at).toLocaleString()}`
+        : "") +
+      (stats.newest_email_at
+        ? ` · newest email ${new Date(stats.newest_email_at).toLocaleString()}`
+        : "");
+
+    // Disagreements first: a street date the sources cannot agree on is a date
+    // that is moving, which is the whole reason sources are stored separately.
+    const dis = data.disagreements || [];
+    presaleDisagreements.innerHTML = dis.length
+      ? `<div class="card-panel"><div class="card-panel-summary static"><span>Source disagreements (${dis.length})</span></div>
+         <div class="card-panel-body">${dis
+           .map(
+             (r) =>
+               `<div><strong>${salesEscape(r.canonical_name || "Unknown")}</strong> — ${presaleDateLabel(r.earliest)} vs ${presaleDateLabel(r.latest)} <span class="muted">(${r.gap_days} day spread across ${r.source_count} sources)</span></div>`,
+           )
+           .join("")}</div></div>`
+      : "";
+
+    const ann = data.announcements || [];
+    presaleAnnouncements.innerHTML = ann.length
+      ? `<div class="card-panel"><div class="card-panel-summary static"><span>Presale announcements (${ann.length})</span></div>
+         <div class="card-panel-body">${ann
+           .map((r) => {
+             const price = Number.isFinite(Number(r.price_cents))
+               ? ` · ${formatSalesMoney(Number(r.price_cents) / 100)}`
+               : "";
+             const link = r.url
+               ? ` · <a href="${salesEscape(r.url)}" target="_blank" rel="noreferrer">link</a>`
+               : "";
+             return `<div><strong>${salesEscape(r.canonical_name || r.subject || "Unidentified product")}</strong>
+               <span class="muted">${r.presale_open_at ? `presale ${presaleDateLabel(r.presale_open_at)}` : ""}
+               ${r.street_date ? ` · street ${presaleDateLabel(r.street_date)}` : ""}${price}${link}
+               ${r.from_addr ? ` · from ${salesEscape(r.from_addr)}` : ""}</span></div>`;
+           })
+           .join("")}</div></div>`
+      : `<div class="card-panel"><div class="card-panel-summary static"><span>Presale announcements</span></div>
+         <div class="card-panel-body muted">No presale announcements extracted yet. These come from the newsletter inbox (Tier A), so they appear once retailers send one.</div></div>`;
+
+    const rows = data.upcoming || [];
+    if (!rows.length) {
+      presaleResults.innerHTML = `<div class="empty-state">No releases in the next ${data.horizonDays} days.</div>`;
+    } else {
+      // Group by date so the calendar reads like a calendar.
+      const byDate = new Map();
+      for (const r of rows) {
+        const key = String(r.release_date).slice(0, 10);
+        if (!byDate.has(key)) byDate.set(key, []);
+        byDate.get(key).push(r);
+      }
+      presaleResults.innerHTML = [...byDate.entries()]
+        .map(
+          ([day, items]) => `
+        <div class="listing-card">
+          <div class="listing-card-header">
+            <div>
+              <div class="listing-card-title">${presaleDateLabel(day)}</div>
+              <div class="listing-card-subtitle">${items.length} release${items.length === 1 ? "" : "s"}</div>
+            </div>
+          </div>
+          <div class="card-panel-body">
+            ${items
+              .map(
+                (r) =>
+                  `<div>${salesEscape(r.canonical_name || "Unnamed")} <span class="muted">· ${salesEscape(r.source)}${r.sport && r.sport !== "other" ? ` · ${salesEscape(r.sport)}` : ""}</span></div>`,
+              )
+              .join("")}
+          </div>
+        </div>`,
+        )
+        .join("");
+    }
+    presaleStatus.textContent = `${rows.length} release${rows.length === 1 ? "" : "s"} in the next ${data.horizonDays} days.`;
+  } catch (error) {
+    presaleStatus.textContent = error.message;
+    presaleResults.innerHTML = `<div class="empty-state">${salesEscape(error.message)}</div>`;
+  }
+}
+
+presaleLoadButton?.addEventListener("click", () => loadPresaleIntel());
 
 /* ── Other Items (non-card store listings) ── */
 const otherItemsLoadButton = document.getElementById("otherItemsLoadButton");
