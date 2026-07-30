@@ -339,6 +339,12 @@ Parse quality on the live run: **126 of 127 titles** keyed. The lone holdout, "2
 Build in this order.
 
 1. **`announcement`** — new `release_announcements` row, confidence ≥ 0.6. Fires off Tier A. Days of lead time.
+
+   **Implementation bug, found and fixed 2026-07-30.** The first build gated this on `conf >= 0.6 and popen and popen <= now + 48h`. Two departures from the rule above, and together they made the alerter 100% silent: the spec has no 48-hour window, and `presale_open_at` is `NULL` whenever a newsletter does not state an open time — which is nearly always. Result: **17 emails ingested, 20 announcements extracted at 0.70–0.95 confidence, 0 alerts sent, and no error anywhere** to show for it. The gate now matches the spec, with staleness judged only on evidence we actually have (`street_date` more than a day past, or `presale_open_at` more than two days past). Unknown timing is explicitly *not* treated as stale — treating it as such is precisely what caused the silence.
+
+   Two supporting changes the fix required:
+   - The §7 cooldown was never implemented and nothing was ever written to `alerts` (the table had 0 rows). It exists now, because without the presale-timestamp gate a daily newsletter would otherwise re-alert on the same product every 15 minutes.
+   - Alert text is cleaned: newsletter links arrive wrapped in campaign tracking (`utm_*`, `mc_cid`, `mc_eid`, …) that tripled message length and echoed a per-subscriber id, and labels were raw column values ("2026 topps Tribute hobby_box").
 2. **`presale_live`** — first product row appears for a `product_key` that has an announcement or upcoming release.
 
    **Caveat, given the 2x/day sweep:** detection lags by up to ~12 hours, so this will NOT catch a fast sellout. Tier B is therefore a price/availability *tracker*, not the fast buy signal. **Tier A (email) is the fast signal** — it arrives with hours of lead time and costs nothing to poll. Build and trust Tier A accordingly.
