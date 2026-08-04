@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { catalog } from "../data/seed.js";
+import { isPlausibleSerial, looksLikeSetNumbering } from "../lib/card-query.js";
 import { hasXimilarConfig, identifyCardWithXimilar, identifyTcgCardWithXimilar } from "./ximilar.js";
 
 const execFileAsync = promisify(execFile);
@@ -219,21 +220,34 @@ async function requestSuryaOcr(imagePath) {
 }
 
 function extractSerialNumber(text) {
-  const fractionMatch = /\b(\d{1,3})\s*\/\s*(\d{1,4})\b/.exec(text);
-  if (fractionMatch) {
+  const fractionMatch = /\b(\d{1,4})\s*\/\s*(\d{1,5})\b/.exec(text);
+  if (fractionMatch && isPlausibleSerial(fractionMatch[1], fractionMatch[2])) {
     return `${fractionMatch[1]}/${fractionMatch[2]}`;
   }
-  const ofMatch = /\b(\d{1,3})\s*(?:of|out of)\s*(\d{1,4})\b/.exec(text);
-  if (ofMatch) {
+  // "10 of 60" is a serial only when it is NOT set numbering: "No. 10 of 60"
+  // means card 10 of a 60-card set (1970 Super Stars was being stored as /60).
+  const ofMatch = /\b(\d{1,4})\s*(?:of|out of)\s*(\d{1,5})\b/i.exec(text);
+  if (
+    ofMatch &&
+    !looksLikeSetNumbering(text, ofMatch.index) &&
+    isPlausibleSerial(ofMatch[1], ofMatch[2])
+  ) {
     return `${ofMatch[1]}/${ofMatch[2]}`;
   }
   return null;
 }
 
 function extractSerialNumberFromFileName(fileName) {
-  const baseName = path.basename(String(fileName || ""));
+  let baseName = path.basename(String(fileName || ""));
+  // Scans are named "<Player>$<price>-<NN>.jpg": the $amount is the manual
+  // price check and the trailing -NN is the front/back index. Without
+  // stripping the price first, "LebronJames$7-01.jpg" reads as serial 7/01 —
+  // which is how effectively every scanned card ended up flagged as
+  // serial-numbered. See resolveManualPriceFromFileNames in lib/filename-price.js.
+  baseName = baseName.replace(/\$\s*\d+(?:[.,]\d{1,2})?/g, "");
   const match = /\b(\d{1,3})[-_](\d{1,4})(?:\.[a-z0-9]+)?$/i.exec(baseName);
   if (!match) return null;
+  if (!isPlausibleSerial(match[1], match[2])) return null;
   return `${match[1]}/${match[2]}`;
 }
 

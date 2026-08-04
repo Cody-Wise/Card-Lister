@@ -75,12 +75,48 @@ export function setFamilyTokens(value) {
     .filter((token) => token && !SET_IGNORE_WORDS.has(token) && !/^\d+$/.test(token));
 }
 
+// A serial is "index / print run" — the index can NEVER exceed the run. That
+// single rule kills most of the false-positive class this app kept hitting:
+//   "7/01"  from a scan filename "Player$7-01.jpg" (price + front/back index)
+//   "611/75" from stray digits picked up next to a real run
+//   "3/01", "2/01", ... 14 of 42 stored serials were impossible this way.
+// A genuine 1-of-1 ("1/1") still passes.
+export function isPlausibleSerial(index, printRun) {
+  // A print run is never written zero-padded: a genuine one-of-one is "1/1",
+  // never "1/01". The padded form is a front/back file index, which is how a
+  // base Stephen Curry and a base Martinez were both stored as 1-of-1s — the
+  // magnitude check below cannot catch those, since 1 <= 1.
+  if (typeof printRun === "string" && /^0\d/.test(printRun.trim())) return false;
+  if (typeof index === "string" && /^0\d/.test(index.trim()) && String(printRun).trim().length < 2) {
+    return false;
+  }
+  const i = Number(index);
+  const run = Number(printRun);
+  if (!Number.isFinite(i) || !Number.isFinite(run)) return false;
+  if (i < 1 || run < 1) return false;
+  if (i > run) return false;
+  // Print runs above this are not a real thing on a numbered card; a match
+  // that large is a year, a barcode or a price, not a serial.
+  if (run > 25000) return false;
+  return true;
+}
+
+// "No. 10 of 60", "Card 10 of 60" is SET numbering (card 10 in a 60-card set),
+// not a serial. 1970 Super Stars Dick Butkus was being stored as /60 because
+// of this.
+export function looksLikeSetNumbering(text, matchIndex) {
+  const before = String(text || "").slice(Math.max(0, matchIndex - 14), matchIndex);
+  return /\b(?:no\.?|number|card|#)\s*$/i.test(before);
+}
+
 export function parsePrintRunFromSerial(value) {
   const serial = String(value || "");
-  const slashMatch = /\b\d{1,3}\s*\/\s*(\d{1,4})\b/.exec(serial);
-  if (slashMatch) return Number(slashMatch[1]);
-  const ofMatch = /\b\d{1,3}\s*(?:of|out of)\s*(\d{1,4})\b/.exec(serial);
-  if (ofMatch) return Number(ofMatch[1]);
+  const slashMatch = /\b(\d{1,4})\s*\/\s*(\d{1,5})\b/.exec(serial);
+  if (slashMatch && isPlausibleSerial(slashMatch[1], slashMatch[2])) return Number(slashMatch[2]);
+  const ofMatch = /\b(\d{1,4})\s*(?:of|out of)\s*(\d{1,5})\b/i.exec(serial);
+  if (ofMatch && !looksLikeSetNumbering(serial, ofMatch.index) && isPlausibleSerial(ofMatch[1], ofMatch[2])) {
+    return Number(ofMatch[2]);
+  }
   return null;
 }
 

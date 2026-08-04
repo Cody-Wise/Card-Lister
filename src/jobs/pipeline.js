@@ -5,7 +5,7 @@ import { applyManualPriceAnchor } from "../services/active-listing-pricing.js";
 import { buildApifyLookupKey } from "../services/apify.js";
 import { calculatePrice } from "../services/pricing.js";
 import { resolveGraderAndGrade, extractGraderAndGradeFromTitle } from "../services/ebay-condition.js";
-import { parallelMatchesTitle } from "../lib/card-query.js";
+import { parallelMatchesTitle, isPlausibleSerial } from "../lib/card-query.js";
 import { resolveManualPriceFromFileNames } from "../lib/filename-price.js";
 import { createAuditEvent, createId, nowIso, withState, withStateReadOnly } from "../lib/store.js";
 
@@ -359,7 +359,11 @@ function extractTitleCardNumber(title) {
 
 function extractTitleSerial(title) {
   const serial = /\b(\d{1,4})\s*\/\s*(\d{1,5})\b/.exec(title);
-  if (!serial) return { serialNumber: null, printRun: null };
+  // "611/75" was stored off a title: an index above the run is not a serial,
+  // it is two unrelated numbers either side of a slash.
+  if (!serial || !isPlausibleSerial(serial[1], serial[2])) {
+    return { serialNumber: null, printRun: null };
+  }
   return {
     serialNumber: `${serial[1]}/${serial[2]}`,
     printRun: Number(serial[2]),
