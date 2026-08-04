@@ -349,7 +349,7 @@ function scoreListing(row, metadata = {}) {
   return score;
 }
 
-function dedupeListings(listings) {
+export function dedupeListings(listings) {
   const seen = new Set();
   const unique = [];
   for (const listing of listings) {
@@ -456,7 +456,7 @@ export async function getApifyUsageStatus() {
 // (Apify) again, so its only remaining job is deciding whether a search
 // should include both new/used condition (trading cards, non-sport cards)
 // instead of just "used".
-function isTradingCardMetadata(metadata = {}) {
+export function isTradingCardMetadata(metadata = {}) {
   const explicit = String(metadata.compDataProvider || metadata.provider || "").toLowerCase().trim();
   if (explicit === "apify" || explicit === "soldcomps") return true;
   const haystack = normalize(
@@ -478,7 +478,7 @@ function isTradingCardMetadata(metadata = {}) {
   );
 }
 
-function resolveApifySoldCount(metadata = {}) {
+export function resolveApifySoldCount(metadata = {}) {
   const configuredCount = clampPositiveInt(
     // SOLDCOMPS_COUNT kept as a legacy alias in case it's still set from the
     // SoldComps.com era — APIFY_EBAY_SOLD_COUNT is the current name.
@@ -496,7 +496,7 @@ function getMarketHeatProvider() {
   return "apify";
 }
 
-function clampPositiveInt(value, fallback, max = 1000) {
+export function clampPositiveInt(value, fallback, max = 1000) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.max(1, Math.round(parsed)), max);

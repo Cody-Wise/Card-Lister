@@ -1,5 +1,6 @@
 import { searchEbayListings, searchEbaySoldListings } from "./ebay-browse.js";
 import { searchApifySoldListings, hasApifyConfig } from "./apify.js";
+import { searchSoldCompsListings, hasSoldCompsApiConfig } from "./soldcomps.js";
 import { searchEbaySoldScraperListings, hasEbaySoldScraperConfig } from "./ebay-sold-scraper.js";
 
 // Bounded wrapper for the Apify attempt inside the auto provider chain —
@@ -22,9 +23,10 @@ async function withProviderTimeout(promise, ms) {
 
 // Sold-comp provider selection. SOLD_COMPS_PROVIDER:
 //   "off" (DEFAULT) — no sold-comp lookups at all
+//   "soldcomps"     — api.sold-comps.com (PREFERRED, and what production runs)
 //   "apify"         — the Apify actor
 //   "scraper"       — the Playwright eBay scraper
-//   "auto"          — Apify first (bounded), scraper on failure
+//   unset + keys    — SoldComps first (bounded), Apify on failure
 //
 // The CODE default stays "off" so no deployment starts spending on Apify by
 // accident — opting in is an explicit env decision.
@@ -35,7 +37,10 @@ async function withProviderTimeout(promise, ms) {
 //               Playwright scraper could not work at all because eBay had put
 //               sold/completed listings behind sign-in (controlled test in
 //               ebay-sold-scraper.js). Pricing fell back to ACTIVE listings.
-//   2026-07-30  PRODUCTION RUNS "apify" AGAIN. The actor returns real
+//   2026-07-30  Sold comps came back. First re-enabled via "apify"; switched
+//               the same day to "soldcomps" (api.sold-comps.com), which reaches
+//               the same data with the same item schema but on a flat monthly
+//               request quota instead of per-run billing. The actor returns real
 //               completed sales once more — verified live: 15 comps with real
 //               sale dates and real eBay item URLs, in ~4.7s, no login. So the
 //               sign-in wall is not a barrier for this actor's technique.
@@ -60,7 +65,7 @@ export function isSoldCompsDisabled() {
 
 export function hasSoldCompsProvider() {
   if (isSoldCompsDisabled()) return false;
-  return hasApifyConfig() || hasEbaySoldScraperConfig();
+  return hasSoldCompsApiConfig() || hasApifyConfig() || hasEbaySoldScraperConfig();
 }
 
 // Both providers return the same contract ({source, comps, importedCount,
@@ -83,6 +88,23 @@ export async function searchSoldListings(metadata = {}) {
   }
   if (provider === "scraper") return searchEbaySoldScraperListings(metadata);
   if (provider === "apify") return searchApifySoldListings(metadata);
+  // The SoldComps API is the preferred provider: same underlying data and the
+  // same item schema as the Apify actor, but billed as a flat monthly request
+  // quota instead of per run.
+  if (provider === "soldcomps") return searchSoldCompsListings(metadata);
+  if (hasSoldCompsApiConfig()) {
+    const soldCompsTimeoutMs = Math.max(
+      1000,
+      Number.parseInt(process.env.SOLD_COMPS_API_TIMEOUT_MS, 10) || 25000,
+    );
+    try {
+      return await withProviderTimeout(searchSoldCompsListings(metadata), soldCompsTimeoutMs);
+    } catch (error) {
+      if (!hasApifyConfig()) throw error;
+      console.warn(`[sold-comps] SoldComps failed (${error.message}) — falling back to the Apify actor`);
+      return searchApifySoldListings(metadata);
+    }
+  }
   if (hasApifyConfig()) {
     const apifyTimeoutMs = Math.max(
       1000,
