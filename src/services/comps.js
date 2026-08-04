@@ -26,17 +26,29 @@ async function withProviderTimeout(promise, ms) {
 //   "scraper"       — the Playwright eBay scraper
 //   "auto"          — Apify first (bounded), scraper on failure
 //
-// Default is OFF as of 2026-07-26, at the user's direction, because neither
-// provider is currently trustworthy:
-//   - Apify's actor (caffein.dev~ebay-sold-listings) has been unreliable —
-//     it hung for 12+ minutes in production, and separately produced a week
-//     of runaway billing.
-//   - The scraper can't work at all: eBay put sold/completed listings behind
-//     sign-in (see ebay-sold-scraper.js for the controlled test).
-// With this off, pricing comes from ACTIVE listings instead (see
-// active-listing-pricing.js), which is the one eBay signal still open to us.
-// Set SOLD_COMPS_PROVIDER=apify to re-enable if the actor recovers, or
-// "auto" once there's a working fallback worth chaining to.
+// The CODE default stays "off" so no deployment starts spending on Apify by
+// accident — opting in is an explicit env decision.
+//
+// History, because the reasoning has now reversed twice:
+//   2026-07-26  Switched off. The Apify actor was unreliable (a 12+ minute
+//               hang in production, plus a week of runaway billing), and the
+//               Playwright scraper could not work at all because eBay had put
+//               sold/completed listings behind sign-in (controlled test in
+//               ebay-sold-scraper.js). Pricing fell back to ACTIVE listings.
+//   2026-07-30  PRODUCTION RUNS "apify" AGAIN. The actor returns real
+//               completed sales once more — verified live: 15 comps with real
+//               sale dates and real eBay item URLs, in ~4.7s, no login. So the
+//               sign-in wall is not a barrier for this actor's technique.
+//               calculatePrice() was always sold-comp-first; it was starved,
+//               not broken. Two things had to be undone as well: 55 cards
+//               carried an apifyNoCompsFound flag recorded against the DEAD
+//               actor (false negatives that would have skipped lookups
+//               forever), and the manual filename anchor was clamping prices
+//               — it now steps aside once there are enough real sold comps
+//               (see applyManualPriceAnchor).
+//
+// The scraper remains unusable; "auto" is still only worth it if a working
+// fallback ever appears.
 function soldCompsProvider() {
   return String(process.env.SOLD_COMPS_PROVIDER || "off").toLowerCase();
 }

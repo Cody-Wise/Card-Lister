@@ -1030,6 +1030,10 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
   const anchoredPrice = applyManualPriceAnchor(
     pricing.recommendedPrice,
     cardItem.manualPriceCheck,
+    // Relevance-filtered sold comps only — the same set that fed calculatePrice.
+    // Once there are enough real completed sales, they lead and the manual
+    // filename read stops clamping the price.
+    { soldCompCount: soldComps.length },
   );
   cardItem.recommendedPrice = anchoredPrice.price ?? pricing.recommendedPrice;
   cardItem.priceAnchorBasis = anchoredPrice.basis;

@@ -308,6 +308,14 @@ export function manualAnchorMaxMultiple() {
   return Number.isFinite(parsed) && parsed >= 1 ? parsed : 2;
 }
 
+// Above this many relevant sold comps, the manual filename price stops acting
+// as a clamp. 3 matches the bar calculatePrice itself uses to call sold-comp
+// evidence "high confidence".
+export function soldCompAnchorBypassMin() {
+  const parsed = Number.parseInt(process.env.MANUAL_ANCHOR_SOLD_COMP_MIN || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+}
+
 export function applyManualPriceAnchor(marketPrice, manualPrice, options = {}) {
   const manual = Number(manualPrice);
   const market = Number(marketPrice);
@@ -332,6 +340,24 @@ export function applyManualPriceAnchor(marketPrice, manualPrice, options = {}) {
       manualPrice: manual,
       marketPrice: null,
       reason: "no usable active listings — using the manual price check",
+    };
+  }
+
+  // Sold comps are the comp engine whenever they exist. The manual filename
+  // price was introduced as a STAND-IN while eBay's completed listings were
+  // unreachable; with real sold data back, clamping a sold-comp median to a
+  // multiple of a number typed into a filename discards the better evidence.
+  // Past the confidence bar, the human read is still recorded — it just stops
+  // moving the price.
+  const soldCompCount = Number(options.soldCompCount);
+  if (Number.isFinite(soldCompCount) && soldCompCount >= soldCompAnchorBypassMin()) {
+    return {
+      price: Math.round(market * 100) / 100,
+      basis: "sold_comps",
+      manualPrice: manual,
+      marketPrice: market,
+      soldCompCount,
+      reason: `${soldCompCount} sold comps on file — using the sold-comp price; manual check ($${manual.toFixed(2)}) kept as evidence only`,
     };
   }
 
