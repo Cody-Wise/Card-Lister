@@ -85,6 +85,60 @@ export function soldCompsMaxAttempts() {
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 5) : 3;
 }
 
+// --- Outage breaker -------------------------------------------------------
+// Observed 2026-08-16: api.sold-comps.com returned a Cloudflare 502 on every
+// request, each taking 12-18s to time out at their edge. Their origin was
+// down; nothing on our side could fix it. Without a breaker, every card in a
+// batch pays that wait twice (once per keyword) purely to fail, so a routine
+// batch grinds to a halt during someone else's outage.
+//
+// A failed request costs no quota (recordSoldCompsRequest only runs on a 2xx),
+// so this is about TIME, not money.
+let consecutiveServerErrors = 0;
+let breakerOpenUntil = 0;
+
+export function soldCompsBreakerCooldownMs() {
+  const parsed = Number.parseInt(process.env.SOLDCOMPS_BREAKER_COOLDOWN_MS || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
+}
+
+export function soldCompsBreakerThreshold() {
+  const parsed = Number.parseInt(process.env.SOLDCOMPS_BREAKER_THRESHOLD || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+}
+
+export function soldCompsRequestTimeoutMs() {
+  const parsed = Number.parseInt(process.env.SOLDCOMPS_REQUEST_TIMEOUT_MS || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
+}
+
+export function isSoldCompsBreakerOpen(now = Date.now()) {
+  return now < breakerOpenUntil;
+}
+
+export function resetSoldCompsBreaker() {
+  consecutiveServerErrors = 0;
+  breakerOpenUntil = 0;
+}
+
+function noteServerError(now = Date.now()) {
+  consecutiveServerErrors += 1;
+  if (consecutiveServerErrors >= soldCompsBreakerThreshold()) {
+    breakerOpenUntil = now + soldCompsBreakerCooldownMs();
+    console.warn(
+      `[soldcomps] ${consecutiveServerErrors} consecutive upstream failures — pausing lookups for ${Math.round(soldCompsBreakerCooldownMs() / 60000)} min`,
+    );
+  }
+}
+
+export function getSoldCompsBreakerStatus(now = Date.now()) {
+  return {
+    open: isSoldCompsBreakerOpen(now),
+    consecutiveServerErrors,
+    reopensInMs: Math.max(0, breakerOpenUntil - now),
+  };
+}
+
 export function soldCompsMonthlyLimit() {
   const parsed = Number(process.env.SOLDCOMPS_MONTHLY_REQUEST_LIMIT);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 90;
@@ -139,6 +193,13 @@ export async function searchSoldCompsListings(metadata = {}) {
 
   if (!config.apiKey) throw new Error("Missing SOLDCOMPS_API_KEY");
 
+  if (isSoldCompsBreakerOpen()) {
+    const mins = Math.ceil(getSoldCompsBreakerStatus().reopensInMs / 60000);
+    throw new Error(
+      `SoldComps is returning upstream errors (their service, not this app or your quota) — lookups paused for ~${mins} more minute(s).`,
+    );
+  }
+
   if (!(await hasSoldCompsBudget())) {
     const limit = soldCompsMonthlyLimit();
     throw new Error(
@@ -191,16 +252,37 @@ export async function searchSoldCompsListings(metadata = {}) {
       // request — re-check before each, or one call could burn through the
       // whole monthly cap in a single shot.
       if (attempt > 1 && !(await hasSoldCompsBudget())) break;
-      const response = await fetch(`${SOLD_COMPS_BASE_URL}/v1/scrape?${params.toString()}`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
-      });
+      let response;
+      try {
+        response = await fetch(`${SOLD_COMPS_BASE_URL}/v1/scrape?${params.toString()}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
+          // Their edge takes 12-18s to give up on a dead origin. Bound it here
+          // so a provider outage cannot stall the pipeline for a whole batch.
+          signal: AbortSignal.timeout(soldCompsRequestTimeoutMs()),
+        });
+      } catch (error) {
+        noteServerError();
+        throw new Error(
+          `SoldComps did not respond (${error?.name === "TimeoutError" ? `no reply within ${soldCompsRequestTimeoutMs()}ms` : error.message}) — their service, not this app or your quota.`,
+        );
+      }
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message =
           payload?.error?.message || payload?.message || payload?.error || `HTTP ${response.status}`;
+        // 5xx is THEIR problem and says nothing about our key or quota. Saying
+        // so plainly matters: a raw "request failed (502)" reads like a
+        // misconfiguration and sends you looking in the wrong place.
+        if (response.status >= 500) {
+          noteServerError();
+          throw new Error(
+            `SoldComps is down (HTTP ${response.status} from their gateway) — their service, not this app, your API key or your quota. Sold comps are skipped until it recovers; pricing falls back to active listings.`,
+          );
+        }
         throw new Error(`SoldComps sold listings request failed (${response.status}): ${message}`);
       }
+      consecutiveServerErrors = 0;
       // Counted against the monthly budget only once the request succeeded.
       await recordSoldCompsRequest();
 

@@ -156,3 +156,86 @@ test("an empty scrape retries, but never past the attempt cap", async () => {
     },
   );
 });
+
+// ── Outage breaker (added 2026-08-16) ──
+// api.sold-comps.com returned a Cloudflare 502 on every request, each taking
+// 12-18s to give up. A failed request costs no quota, so this is about not
+// stalling a whole batch on someone else's outage.
+import {
+  isSoldCompsBreakerOpen,
+  resetSoldCompsBreaker,
+  getSoldCompsBreakerStatus,
+} from "../src/services/soldcomps.js";
+
+test("repeated upstream 5xx opens the breaker and stops calling out", async () => {
+  resetSoldCompsBreaker();
+  await withEnv(
+    {
+      SOLDCOMPS_API_KEY: "sc_test",
+      SOLDCOMPS_MONTHLY_REQUEST_LIMIT: "50",
+      SOLDCOMPS_MAX_ATTEMPTS: "1",
+      SOLDCOMPS_BREAKER_THRESHOLD: "2",
+    },
+    async () => {
+      let calls = 0;
+      const restore = mockFetch(async () => {
+        calls += 1;
+        return { ok: false, status: 502, json: async () => ({ message: "Bad gateway" }) };
+      });
+      const metadata = { playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" };
+      try {
+        await assert.rejects(() => searchSoldCompsListings(metadata), /SoldComps is down/i);
+        await assert.rejects(() => searchSoldCompsListings(metadata), /SoldComps is down/i);
+        assert.equal(calls, 2);
+        assert.equal(isSoldCompsBreakerOpen(), true, "breaker opened after the threshold");
+
+        // Third call must not touch the network at all.
+        await assert.rejects(() => searchSoldCompsListings(metadata), /lookups paused/i);
+        assert.equal(calls, 2, "no further requests once the breaker is open");
+
+        // And an outage must never be charged against the monthly quota.
+        const status = await getSoldCompsUsageStatus();
+        assert.equal(status.count, 0, "failed requests cost no quota");
+      } finally {
+        restore();
+        resetSoldCompsBreaker();
+      }
+    },
+  );
+});
+
+test("a success clears the consecutive-error count", async () => {
+  resetSoldCompsBreaker();
+  await withEnv(
+    { SOLDCOMPS_API_KEY: "sc_test", SOLDCOMPS_MONTHLY_REQUEST_LIMIT: "50", SOLDCOMPS_BREAKER_THRESHOLD: "3" },
+    async () => {
+      let n = 0;
+      const restore = mockFetch(async () => {
+        n += 1;
+        if (n === 1) return { ok: false, status: 503, json: async () => ({}) };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [{
+              itemId: "x1", title: "2024 Test Set Test Player #1", condition: "Pre-Owned",
+              soldPrice: "9.99", shippingPrice: "0.00", totalPrice: "9.99",
+              endedAt: "2026-08-07T00:00:00.000Z", url: "https://www.ebay.com/itm/x1",
+            }],
+          }),
+        };
+      });
+      const metadata = { playerName: "Test Player", year: 2024, setName: "Test Set", cardNumber: "1" };
+      try {
+        await assert.rejects(() => searchSoldCompsListings(metadata), /SoldComps is down/i);
+        assert.equal(getSoldCompsBreakerStatus().consecutiveServerErrors, 1);
+        await searchSoldCompsListings(metadata);
+        assert.equal(getSoldCompsBreakerStatus().consecutiveServerErrors, 0, "reset on success");
+        assert.equal(isSoldCompsBreakerOpen(), false);
+      } finally {
+        restore();
+        resetSoldCompsBreaker();
+      }
+    },
+  );
+});
