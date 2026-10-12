@@ -1134,6 +1134,9 @@ async function computeCardResult({ cardItem: snapshotCardItem, frontImage, backI
     cardItem.status = "needs_review";
   }
   cardItem.updatedAt = nowIso();
+  // A completed pass clears any error left behind by an earlier failed attempt,
+  // so a recovered card stops reporting a stale failure to the app.
+  delete cardItem.processingError;
 
   const deletedKeys = [...originalKeys].filter((key) => !(key in cardItem));
   // Persist the already-relevance-filtered soldComps/activeFiltered (player,
@@ -1205,6 +1208,81 @@ export async function processCardItem(cardItemId) {
   const snapshot = await withStateReadOnly(async (state) => readCardSnapshot(state, cardItemId));
   const result = await computeCardResult(snapshot);
   return writeCardResult(cardItemId, result);
+}
+
+// --- Background card processing -------------------------------------------
+//
+// processCardItem does OCR (vision), a sold-comp lookup and a Browse call —
+// tens of seconds per card at best. The card-upload route used to await it
+// inline, which was survivable from a desktop on the LAN but not from a phone:
+// a stack of cards would hold the HTTP connection open for minutes and die to a
+// mobile-network timeout, losing the client's only handle on the work.
+//
+// Uploads now enqueue and return immediately; clients poll card status, which
+// already moves ocr_pending -> priced/needs_review on its own.
+
+const cardQueue = [];
+const queuedCardIds = new Set();
+let activeCardWorkers = 0;
+
+function cardProcessConcurrency() {
+  return Math.max(
+    1,
+    Math.min(4, Number.parseInt(process.env.CARD_PROCESS_CONCURRENCY || "3", 10) || 3),
+  );
+}
+
+async function markCardFailed(cardItemId, error) {
+  // Without this the card would sit at ocr_pending forever, which reads as
+  // "still working" to a polling client rather than as a failure.
+  try {
+    await withState(async (state) => {
+      const card = state.cardItems.find((item) => item.id === cardItemId);
+      if (!card) return;
+      card.status = "failed";
+      card.processingError = error.message;
+      card.updatedAt = nowIso();
+      createAuditEvent(state, "cardItem", cardItemId, "processing_failed", {
+        error: error.message,
+      });
+    });
+  } catch {
+    // A failure while recording a failure must not take the worker down.
+  }
+}
+
+function pumpCardQueue() {
+  while (activeCardWorkers < cardProcessConcurrency() && cardQueue.length) {
+    const cardItemId = cardQueue.shift();
+    queuedCardIds.delete(cardItemId);
+    activeCardWorkers += 1;
+    processCardItem(cardItemId)
+      .catch((error) => markCardFailed(cardItemId, error))
+      .finally(() => {
+        activeCardWorkers -= 1;
+        pumpCardQueue();
+      });
+  }
+}
+
+/**
+ * Queues a card for processing and returns immediately. Re-queuing a card that
+ * is already waiting is a no-op, so a client retrying an upload cannot make the
+ * same card burn a second set of paid vendor calls.
+ */
+export function queueCardProcessing(cardItemId) {
+  if (queuedCardIds.has(cardItemId)) return;
+  queuedCardIds.add(cardItemId);
+  cardQueue.push(cardItemId);
+  pumpCardQueue();
+}
+
+export function cardQueueStats() {
+  return {
+    queued: cardQueue.length,
+    active: activeCardWorkers,
+    concurrency: cardProcessConcurrency(),
+  };
 }
 
 // Statuses that mean a card already has real, usable OCR/pricing data —

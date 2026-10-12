@@ -97,6 +97,34 @@ export function isAuthenticated(req) {
   return true;
 }
 
+// Bearer-token auth for the mobile app.
+//
+// The browser UI signs in with Google and carries a session cookie, but a native
+// app has no practical way to drive that OAuth redirect flow and hold the
+// cookie. MOBILE_API_TOKEN is a second credential for the same single operator:
+// it grants exactly what a signed-in session grants, and when it is unset no
+// token can ever authenticate, so the app simply cannot get in until one is
+// deliberately configured.
+export function hasMobileApiToken() {
+  return Boolean(String(process.env.MOBILE_API_TOKEN || "").trim());
+}
+
+export function isValidApiToken(req) {
+  const expected = String(process.env.MOBILE_API_TOKEN || "").trim();
+  if (!expected) return false;
+
+  const header = String(req.headers.authorization || "");
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  const presented = match ? match[1].trim() : "";
+  if (!presented) return false;
+
+  const a = Buffer.from(presented, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  // timingSafeEqual throws on length mismatch, which would itself leak length.
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 export function getGoogleOAuthUrl(req) {
   const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID;
   const redirectUri = getRedirectUri(req);

@@ -18,6 +18,8 @@ import { resolveGraderAndGrade } from "./services/ebay-condition.js";
 import {
   processBatch,
   processCardItem,
+  queueCardProcessing,
+  cardQueueStats,
   filterExactMatchComps,
   resolveGradeTarget,
   isBatchProcessing,
@@ -74,6 +76,8 @@ import { handleNonCardApiRoutes } from "./routes/non-card-routes.js";
 import { getPresaleIntel, hasPresaleIntelConfig } from "./services/presale-intel.js";
 import {
   isAuthenticated,
+  isValidApiToken,
+  hasMobileApiToken,
   isAllowedEmail,
   getGoogleOAuthUrl,
   exchangeGoogleCode,
@@ -2528,7 +2532,12 @@ export async function handler(req, res) {
   // storage bucket already is.
   const isPublicFilesRoute = pathname.startsWith("/files/");
   const bypassesAuthGate = isEbayAuthRoute || isPublicFilesRoute;
-  const authenticated = isAuthenticated(req);
+  // The mobile app presents a bearer token instead of a Google session cookie;
+  // both grant the same access. Only /api/* accepts the token — the HTML UI is
+  // cookie-only, so a leaked token cannot be pasted into a browser to get an
+  // interactive session.
+  const authenticated =
+    isAuthenticated(req) || (pathname.startsWith("/api/") && isValidApiToken(req));
 
   if (!authenticated && (pathname === "/" || pathname.startsWith("/public/"))) {
     const served = await serveStatic(req, res, "/login.html");
@@ -2573,6 +2582,10 @@ export async function handler(req, res) {
         hasVisionConfig: Boolean(process.env.OPENAI_API_KEY),
         model: process.env.OPENAI_VISION_MODEL || "gpt-4.1",
       },
+      auth: {
+        hasApiToken: hasMobileApiToken(),
+      },
+      queue: cardQueueStats(),
     });
   }
 
@@ -4257,10 +4270,70 @@ export async function handler(req, res) {
       return { batchId, createdIds: created.map((card) => card.id), created };
     });
     if (!result) return;
+    // Queued rather than awaited: the pipeline takes tens of seconds per card,
+    // which a phone upload over cellular will not wait for. Clients poll card
+    // status (ocr_pending -> priced/needs_review/failed) instead.
     for (const cardItemId of result.createdIds) {
-      await processCardItem(cardItemId);
+      queueCardProcessing(cardItemId);
     }
-    return sendJson(res, 201, { batchId, created: result.created });
+    return sendJson(res, 201, {
+      batchId,
+      created: result.created,
+      queue: cardQueueStats(),
+    });
+  }
+
+  // Compact feed for the mobile app. /api/bootstrap and /api/card-items return
+  // every card with its comps, pricing evidence and raw eBay payloads — tens of
+  // KB per card, which makes a scrolling phone list needlessly expensive over
+  // cellular. This returns only what a list row renders.
+  if (req.method === "GET" && pathname === "/api/feed") {
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 60, 200);
+    const feedBatchId = url.searchParams.get("batchId");
+    return withStateReadOnly(async (state) => {
+      const source = feedBatchId
+        ? state.cardItems.filter((card) => card.batchId === feedBatchId)
+        : state.cardItems;
+      const cards = [...source]
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+        .slice(0, limit)
+        .map((card) => {
+          const images = state.cardImages.filter((image) => image.cardItemId === card.id);
+          const offer = state.offers.find((entry) => entry.cardItemId === card.id) || null;
+          return {
+            id: card.id,
+            batchId: card.batchId,
+            status: card.status,
+            sku: card.sku || null,
+            player: card.candidatePlayer || null,
+            year: card.candidateYear ?? null,
+            setName: card.candidateSetName || null,
+            cardNumber: card.candidateCardNumber || null,
+            parallel: card.candidateParallel || null,
+            grade: card.candidateGrade || null,
+            condition: card.candidateCondition || null,
+            serialNumber: card.serialNumber || null,
+            printRun: card.printRun ?? null,
+            rookieFlag: Boolean(card.candidateRookieFlag),
+            autoFlag: Boolean(card.candidateAutoHint),
+            recommendedPrice: card.recommendedPrice ?? null,
+            currency: card.currency || "USD",
+            confidenceScore: card.confidenceScore ?? null,
+            pricingConfidence: card.pricingConfidence ?? null,
+            pricingReason: card.pricingReason ?? null,
+            processingError: card.processingError || null,
+            apifyError: card.apifyError || null,
+            publishState: card.publishState || "draft",
+            listingUrl: card.listingUrl || offer?.listingUrl || null,
+            offerId: offer?.id || null,
+            frontImageUrl: images.find((image) => image.side === "front")?.url || null,
+            backImageUrl: images.find((image) => image.side === "back")?.url || null,
+            createdAt: card.createdAt,
+            updatedAt: card.updatedAt,
+          };
+        });
+      return sendJson(res, 200, { cards, queue: cardQueueStats() });
+    });
   }
 
   if (req.method === "GET" && pathname === "/api/card-items") {
@@ -5002,8 +5075,24 @@ export async function handler(req, res) {
     pathname.endsWith("/offers/create")
   ) {
     const batchId = pathname.split("/")[3];
+    // Optional card scoping. This route already creates-and-publishes correctly
+    // (inventory item, best-offer terms, reprice baseline), so narrowing the card
+    // set lets the mobile app list one card through that exact path instead of a
+    // parallel single-card implementation that would inevitably drift from it.
+    // Omitting the filter leaves the batch behaviour the web UI depends on
+    // completely unchanged.
+    const scopeBody = await readJson(req).catch(() => ({}));
+    const requestedIds = Array.isArray(scopeBody?.cardItemIds)
+      ? scopeBody.cardItemIds.filter(Boolean)
+      : null;
     return withState(async (state) => {
-      const cards = state.cardItems.filter((item) => item.batchId === batchId);
+      const batchCards = state.cardItems.filter((item) => item.batchId === batchId);
+      const cards = requestedIds
+        ? batchCards.filter((item) => requestedIds.includes(item.id))
+        : batchCards;
+      if (requestedIds && !cards.length) {
+        return sendJson(res, 404, { error: "No matching cards in this batch" });
+      }
       const existingOffers = state.offers.filter((o) => cards.some((c) => c.id === o.cardItemId));
       const existingOfferMap = {};
       for (const o of existingOffers) existingOfferMap[o.cardItemId] = o;
