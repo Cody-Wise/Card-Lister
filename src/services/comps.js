@@ -167,21 +167,50 @@ export async function getLiveCardComps(
   // to: the eBay-native path below calls findCompletedItems, which eBay
   // decommissioned, so it's a guaranteed-empty round trip. Skip it rather
   // than spend a request proving that every time.
-  const soldSource = isSoldCompsDisabled()
-    ? { comps: [] }
-    : allowApify && hasSoldCompsProvider()
-      ? await searchSoldListings(metadata)
-      : {
-          comps: await searchEbaySoldListings({
-            metadata,
-            frontImagePath,
-            backImagePath,
-            imageUrl,
-            matchedListings: liveActive,
-          }),
-        };
+  // A sold-comp PROVIDER OUTAGE MUST NOT FAIL THE CARD.
+  //
+  // Learned the hard way: on 2026-10-09/10 api.sold-comps.com was down and 13
+  // cards in batch_0048 came out status="failed" with processingError
+  // "SoldComps did not respond". Nothing was wrong with those cards — images,
+  // OCR and active listings were all fine — the comp provider was simply
+  // unreachable, and that threw straight out of here into markCardFailed().
+  //
+  // The provider is consulted TWICE per card: computeCardResult calls
+  // searchSoldListings itself inside a try/catch (recording cardItem.apifyError
+  // and continuing), and then calls this function, which called it AGAIN with no
+  // guard. So the guarded attempt degraded exactly as intended and the unguarded
+  // one immediately after it killed the card anyway.
+  //
+  // Catching here rather than at each call site is deliberate: every caller
+  // (pipeline processing, manual reprice, review actions, the Best Offers scan)
+  // already treats "no sold comps" as a normal outcome and falls back to
+  // active-listing pricing, which is what the comment above promises. Verified
+  // against the real failure: with this in place the same input returns 14
+  // active listings instead of throwing. soldError is returned so callers can
+  // surface WHY comps are missing rather than silently showing none.
+  let soldSource = { comps: [] };
+  let soldError = null;
+  try {
+    soldSource = isSoldCompsDisabled()
+      ? { comps: [] }
+      : allowApify && hasSoldCompsProvider()
+        ? await searchSoldListings(metadata)
+        : {
+            comps: await searchEbaySoldListings({
+              metadata,
+              frontImagePath,
+              backImagePath,
+              imageUrl,
+              matchedListings: liveActive,
+            }),
+          };
+  } catch (error) {
+    soldError = error?.message || String(error);
+    console.warn(`[comps] sold-comp lookup failed, pricing from active listings instead: ${soldError}`);
+  }
   return {
     sold: dedupeComps([...(Array.isArray(soldSource.comps) ? soldSource.comps : []), ...manual]),
     active: liveActive,
+    soldError,
   };
 }
